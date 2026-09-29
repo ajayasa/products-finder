@@ -152,6 +152,42 @@ def score_video(v):
     return trend,uniqueness,min(usefulness,100),min(demo,100),saturation,opportunity,status
 
 
+def normalize_product_name(name):
+    t=clean_text(name).lower()
+    t=re.sub(r"[^a-z0-9 ]+", " ", t)
+    t=re.sub(r"\b(review|unboxing|amazon|flipkart|meesho|viral|best|top|new|cool|useful|gadget|gadgets|product|products)\b", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+def dedupe_products(df):
+    if df.empty: return df
+    x=df.copy(); x["_product_key"]=x["name"].map(normalize_product_name)
+    x=x.sort_values(["opportunity_score","views"],ascending=False)
+    x=x.drop_duplicates("_product_key",keep="first").drop(columns=["_product_key"],errors="ignore")
+    return x.reset_index(drop=True)
+
+def youtube_search_unique(api_key, query, region="IN", per_query=50):
+    if not query.strip(): return pd.DataFrame()
+    cutoff=(datetime.now(timezone.utc)-timedelta(days=90)).isoformat().replace("+00:00","Z")
+    sess=requests.Session(); params={"part":"snippet","q":query.strip(),"type":"video","order":"relevance","publishedAfter":cutoff,"maxResults":min(int(per_query),50),"regionCode":region,"key":api_key}
+    r=sess.get("https://www.googleapis.com/youtube/v3/search",params=params,timeout=20); r.raise_for_status()
+    raw=[]
+    for item in r.json().get("items",[]):
+        vid=item.get("id",{}).get("videoId")
+        if not vid: continue
+        sn=item.get("snippet",{})
+        raw.append({"video_id":vid,"title":sn.get("title",""),"description":sn.get("description","") or "","channel":sn.get("channelTitle",""),"published_at":sn.get("publishedAt",""),"thumbnail":sn.get("thumbnails",{}).get("high",{}).get("url") or sn.get("thumbnails",{}).get("medium",{}).get("url")})
+    if not raw: return pd.DataFrame()
+    ids=",".join(x["video_id"] for x in raw); r=sess.get("https://www.googleapis.com/youtube/v3/videos",params={"part":"snippet,statistics","id":ids,"key":api_key},timeout=20); r.raise_for_status()
+    byid={x["video_id"]:x for x in raw}; rows=[]
+    for item in r.json().get("items",[]):
+        x=byid.get(item.get("id"),{}); stt=item.get("statistics",{}); pub=x.get("published_at","")
+        try: age=(datetime.now(timezone.utc)-datetime.fromisoformat(pub.replace("Z","+00:00"))).total_seconds()/86400
+        except: age=1
+        x={**x,"views":int(stt.get("viewCount",0) or 0),"likes":int(stt.get("likeCount",0) or 0),"comments":int(stt.get("commentCount",0) or 0),"age_days":max(age,.25)}
+        name=candidate_name(x["title"]); trend,uniq,use,demo,sat,opp,status=score_video(x); external=extract_urls(x.get("description","")); links=[[urlparse(u).netloc.replace("www.","").split(".")[0].title(),u] for u in external] or marketplace_links(name)
+        rows.append({"name":name,"category":classify(name+" "+x.get("title","")+" "+x.get("description","")),"segment":"Viral / Trending Products" if status=="Viral/Trending" else "Other Unique & Useful","trend_status":status,"opportunity_score":opp,"trend_score":trend,"uniqueness_score":uniq,"usefulness_score":use,"demo_score":demo,"saturation_score":sat,"why_interesting":f"Reference video by {x.get('channel','creator')}; {x.get('views',0):,} views.","image_url":x.get("thumbnail","") or "","youtube_url":f"https://www.youtube.com/watch?v={x['video_id']}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":links,"channel":x.get("channel",""),"views":x.get("views",0),"likes":x.get("likes",0),"comments":x.get("comments",0),"published_at":x.get("published_at",""),"season":seasonal_tag(name+" "+x.get("title",""))})
+    return dedupe_products(pd.DataFrame(rows))
+
 def youtube_discover(api_key, region="IN", lookback=30, per_query=20, max_queries=20, language="en"):
     cutoff=(datetime.now(timezone.utc)-timedelta(days=lookback)).isoformat().replace("+00:00","Z")
     queries=[(cat,q) for cat,qs in QUERY_PACK.items() for q in qs][:max_queries]
@@ -189,7 +225,11 @@ def youtube_discover(api_key, region="IN", lookback=30, per_query=20, max_querie
 
 
 if "live_df" not in st.session_state: st.session_state.live_df=pd.DataFrame()
+if "search_df" not in st.session_state: st.session_state.search_df=pd.DataFrame()
+if "search_term" not in st.session_state: st.session_state.search_term=""
+if "favorites" not in st.session_state: st.session_state.favorites=[]
 if "last_error" not in st.session_state: st.session_state.last_error=""
+if "page" not in st.session_state: st.session_state.page=1
 
 st.markdown("""<style>
 .block-container{max-width:1450px;padding:1rem 2rem 3rem}.hero{padding:24px;border:1px solid #e6e6e6;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#fff);margin-bottom:18px}.hero h1{margin:0;font-size:2.1rem;font-weight:850}.hero p{margin:5px 0 0;color:#666}.card{border:1px solid #e4e4e4;border-radius:18px;overflow:hidden;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05);height:100%}.card-title{font-size:1.05rem;font-weight:800;line-height:1.3;margin:10px 0 6px}.badge{display:inline-block;font-size:11px;font-weight:750;padding:5px 8px;border-radius:999px;background:#f1f3f5;margin:0 5px 5px 0}.hot{background:#fff0ed;color:#c0392b}.rise{background:#fff7dc;color:#9a6900}.why{font-size:13px;color:#555;line-height:1.45;min-height:48px}.score{font-size:1.35rem;font-weight:850}.muted{color:#777;font-size:12px}.buttonrow{display:flex;gap:8px;margin-top:12px}.pagebar{padding:12px 14px;border:1px solid #e7e7e7;border-radius:14px;background:#fff;margin:12px 0}.small{font-size:12px;color:#777}@media(max-width:700px){.block-container{padding:.7rem}.hero h1{font-size:1.65rem}.buttonrow{display:block}.buttonrow>*{margin-bottom:6px;width:100%}}
@@ -214,31 +254,67 @@ st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Browse individual 
 
 raw=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
 
-c1,c2,c3,c4=st.columns([2.2,1.2,1.2,1.2])
-with c1: search=st.text_input("Search",placeholder="Search products…",label_visibility="collapsed")
-with c2: cat=st.selectbox("Category",["All"]+sorted(raw.category.dropna().unique().tolist()),label_visibility="collapsed")
-with c3: status=st.selectbox("Trend",["All","Viral/Trending","Rising","Other"],label_visibility="collapsed")
-with c4: sort=st.selectbox("Sort",["Opportunity","Newest","Trend","Views","Usefulness"],label_visibility="collapsed")
+# Search is an explicit action. Search results are deduplicated by product name.
+search_col, button_col, fav_col = st.columns([6,1.4,1.4])
+with search_col:
+    search_term=st.text_input("Search products",placeholder="Type a product or problem, then click Search",label_visibility="collapsed",key="search_input")
+with button_col:
+    do_search=st.button("🔎 Search",use_container_width=True)
+with fav_col:
+    show_fav=st.button(f"♥ Favorites ({len(st.session_state.favorites)})",use_container_width=True)
 
-if st.session_state.last_error: st.error(st.session_state.last_error)
+if do_search:
+    if not search_term.strip():
+        st.warning("Enter a product or problem to search.")
+    elif not api_key:
+        st.session_state.search_df=dedupe_products(raw)
+        st.session_state.search_term=search_term.strip()
+        st.session_state.last_error="Demo mode: add a YouTube API key in Settings for live unique-product search."
+    else:
+        with st.spinner(f"Searching unique products for: {search_term.strip()} …"):
+            try:
+                st.session_state.search_df=youtube_search_unique(api_key,search_term,region,50)
+                st.session_state.search_term=search_term.strip(); st.session_state.last_error=""; st.session_state.page=1
+            except Exception as e:
+                st.session_state.last_error=f"Search failed: {type(e).__name__}: {e}"
 
-data=raw.copy()
-if search: data=data[data.name.astype(str).str.contains(search,case=False,na=False)]
-if cat!="All": data=data[data.category==cat]
-if status!="All": data=data[data.trend_status==status]
-if sort=="Newest": data["_date"]=pd.to_datetime(data.get("published_at"),errors="coerce",utc=True); data=data.sort_values("_date",ascending=False)
-elif sort=="Views": data=data.sort_values("views",ascending=False)
-elif sort=="Trend": data=data.sort_values("trend_score",ascending=False)
-elif sort=="Usefulness": data=data.sort_values("usefulness_score",ascending=False)
-else: data=data.sort_values("opportunity_score",ascending=False)
+if show_fav:
+    st.session_state.page=1
 
-data=data.head(MAX_CARDS).reset_index(drop=True)
-page=st.number_input("Page",min_value=1,max_value=TOTAL_PAGES,value=1,step=1)
-start=(page-1)*PAGE_SIZE; page_data=data.iloc[start:start+PAGE_SIZE]
+if st.session_state.last_error: st.warning(st.session_state.last_error)
 
-m1,m2,m3,m4=st.columns(4)
-m1.metric("Video cards",len(data));m2.metric("Page",f"{page}/{TOTAL_PAGES}");m3.metric("Viral / Trending",int((data.trend_status=="Viral/Trending").sum()));m4.metric("Rising",int((data.trend_status=="Rising").sum()))
-st.caption(f"Showing cards {start+1 if len(page_data) else 0}–{start+len(page_data) if len(page_data) else 0} of {len(data)}. The system does not merge repeated products; separate videos remain separate cards.")
+if show_fav:
+    data=pd.DataFrame(st.session_state.favorites) if st.session_state.favorites else pd.DataFrame()
+elif not st.session_state.search_df.empty:
+    data=st.session_state.search_df.copy()
+elif st.session_state.search_term:
+    data=pd.DataFrame()
+else:
+    data=raw.copy()
+
+# Filters apply only after an explicit search or while browsing the default feed.
+c1,c2,c3=st.columns([2,2,2])
+with c1: cat=st.selectbox("Category",["All"]+sorted(data.category.dropna().unique().tolist()) if not data.empty else ["All"],label_visibility="collapsed")
+with c2: status=st.selectbox("Trend",["All","Viral/Trending","Rising","Other"],label_visibility="collapsed")
+with c3: sort=st.selectbox("Sort",["Opportunity","Newest","Trend","Views","Usefulness"],label_visibility="collapsed")
+
+if not data.empty:
+    if cat!="All": data=data[data.category==cat]
+    if status!="All": data=data[data.trend_status==status]
+    if sort=="Newest": data["_date"]=pd.to_datetime(data.get("published_at"),errors="coerce",utc=True); data=data.sort_values("_date",ascending=False)
+    elif sort=="Views": data=data.sort_values("views",ascending=False)
+    elif sort=="Trend": data=data.sort_values("trend_score",ascending=False)
+    elif sort=="Usefulness": data=data.sort_values("usefulness_score",ascending=False)
+    else: data=data.sort_values("opportunity_score",ascending=False)
+    data=data.head(MAX_CARDS).reset_index(drop=True)
+
+# Simple page navigation: five separate page buttons, no page/card metrics.
+pcols=st.columns(5)
+for n,pc in enumerate(pcols,1):
+    with pc:
+        if st.button(str(n),key=f"page_{n}",use_container_width=True): st.session_state.page=n
+page=st.session_state.page
+start=(page-1)*PAGE_SIZE; page_data=data.iloc[start:start+PAGE_SIZE] if not data.empty else data
 
 if len(page_data)==0:
     st.info("No cards on this page yet. Run live discovery or change the filters.")
@@ -263,7 +339,16 @@ else:
                     st.write(str(p.get("why_interesting","")))
                     st.markdown(f'<div class="score">{int(p.get("opportunity_score",0))}<span class="muted"> / 100 opportunity</span></div>',unsafe_allow_html=True)
                     st.caption(f"Trend {int(p.get('trend_score',0))} • Usefulness {int(p.get('usefulness_score',0))} • Uniqueness {int(p.get('uniqueness_score',0))}")
-                    b1,b2=st.columns(2)
+                    fav_key=normalize_product_name(str(p.get("name","")))+"|"+str(p.get("youtube_url",""))
+                    is_fav=any(normalize_product_name(str(f.get("name","")))+"|"+str(f.get("youtube_url",""))==fav_key for f in st.session_state.favorites)
+                    fcol,b1,b2=st.columns([.8,1.6,1.6])
+                    with fcol:
+                        if st.button("♥" if is_fav else "♡",key=f"fav_{page}_{i}_{j}",help="Save for future reference"):
+                            if is_fav:
+                                st.session_state.favorites=[f for f in st.session_state.favorites if normalize_product_name(str(f.get("name","")))+"|"+str(f.get("youtube_url",""))!=fav_key]
+                            else:
+                                st.session_state.favorites.append(p.to_dict())
+                            st.rerun()
                     with b1: st.link_button("▶ YouTube",str(p.get("youtube_url","")),use_container_width=True)
                     with b2: st.link_button("◎ Instagram",str(p.get("instagram_url","")),use_container_width=True)
                     links=p.get("product_links",[]) or []
@@ -273,4 +358,4 @@ else:
                             st.link_button(label,url,use_container_width=True)
 
 st.divider()
-st.caption("Pages are fixed at 100 cards each, up to 5 pages / 500 cards. Exact repeated products are intentionally retained as separate video cards; only duplicate copies of the same video ID are removed when a search result appears under multiple queries.")
+st.caption("Pages 1–5 contain up to 100 cards each. Normal discovery keeps individual videos; an explicit Search returns unique products so repeated products are not shown in search results. Favorites are saved for the current session.")
