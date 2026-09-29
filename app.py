@@ -186,86 +186,93 @@ def youtube_discover(api_key, region="IN", lookback=30, per_query=8, max_queries
     return pd.DataFrame(rows).sort_values("opportunity_score",ascending=False) if rows else pd.DataFrame()
 
 # Session state
-if "live_df" not in st.session_state: st.session_state.live_df=pd.DataFrame()
-if "last_error" not in st.session_state: st.session_state.last_error=""
+if 'live_df' not in st.session_state: st.session_state.live_df=pd.DataFrame()
+if 'last_error' not in st.session_state: st.session_state.last_error=''
 
-st.markdown("""<style>
-.block-container{padding-top:1rem;max-width:1250px}.product-card{border:1px solid #ddd;border-radius:14px;padding:14px;margin:8px 0}.score{font-size:1.4rem;font-weight:700}.muted{opacity:.72;font-size:.86rem}@media(max-width:700px){.block-container{padding-left:.7rem;padding-right:.7rem}.stButton button,.stLinkButton button{width:100%}}
-</style>""",unsafe_allow_html=True)
+st.set_page_config(page_title='Product Hunter', page_icon='🔎', layout='wide', initial_sidebar_state='collapsed')
 
-st.title("🔎 Global Product Hunter")
-st.caption("Social-first product discovery • YouTube live discovery + demo fallback • mobile and desktop friendly")
+st.markdown('''
+<style>
+.block-container{max-width:1400px;padding:1rem 2rem 3rem}
+[data-testid="stHeader"]{background:transparent}
+.hero{padding:22px 24px;border:1px solid #e7e7e7;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#ffffff);margin-bottom:18px}
+.hero h1{font-size:2.15rem;margin:0 0 5px;font-weight:800;letter-spacing:-.8px}.hero p{margin:0;color:#666}
+.section-title{font-size:1.35rem;font-weight:800;margin:20px 0 10px}
+.card{height:100%;border:1px solid #e7e7e7;border-radius:18px;background:#fff;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.04)}
+.card-img{height:190px;width:100%;object-fit:cover;background:#f3f4f6}.card-body{padding:15px}.badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}.badge{font-size:11px;padding:5px 8px;border-radius:999px;background:#f1f3f5;color:#444;font-weight:700}.badge.hot{background:#fff0ed;color:#c0392b}.badge.rising{background:#fff7dc;color:#9a6900}.badge.other{background:#eef5ff;color:#3567a8}
+.card-title{font-size:1.06rem;font-weight:800;line-height:1.25;margin:5px 0 7px;color:#171717}.meta{font-size:12px;color:#707070;margin-bottom:9px}.why{font-size:13px;color:#555;line-height:1.45;min-height:54px}.score-row{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #eee;margin-top:12px;padding-top:11px}.score{font-size:1.35rem;font-weight:850}.score small{font-size:10px;color:#777;font-weight:600;display:block}.metrics{font-size:11px;color:#666;line-height:1.6}.links{display:flex;gap:8px;margin-top:13px}.links a{flex:1;text-align:center;text-decoration:none;padding:9px 7px;border-radius:10px;font-size:12px;font-weight:750;border:1px solid #ddd;color:#222;background:#fff}.links a.primary{background:#111;color:#fff;border-color:#111}
+.empty{padding:50px 20px;text-align:center;border:1px dashed #ccc;border-radius:18px;color:#666}
+@media(max-width:700px){.block-container{padding:.7rem .7rem 2rem}.hero{padding:18px;border-radius:17px}.hero h1{font-size:1.65rem}.card-img{height:165px}.card-title{font-size:1rem}.links a{font-size:11px;padding:8px 4px}}
+</style>
+''',unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header("Discovery")
-    api_key=st.text_input("YouTube API key", type="password", value=st.secrets.get("YOUTUBE_API_KEY", os.getenv("YOUTUBE_API_KEY", "")) if hasattr(st,"secrets") else os.getenv("YOUTUBE_API_KEY", ""))
-    region=st.selectbox("Region",["IN","US","GB","AE","AU","CA","SG","JP"],index=0)
-    lookback=st.slider("Lookback days",1,90,30)
-    per_query=st.slider("Videos per query",3,20,8)
-    max_queries=st.slider("Queries per run",3,12,8)
-    st.caption("YouTube Search API calls consume quota; keep query count modest for repeated testing.")
-    if st.button("🚀 Run live discovery",use_container_width=True):
+    st.header('⚙️ Discovery settings')
+    api_key=st.text_input('YouTube API key', type='password', value=st.secrets.get('YOUTUBE_API_KEY', os.getenv('YOUTUBE_API_KEY', '')) if hasattr(st,'secrets') else os.getenv('YOUTUBE_API_KEY',''))
+    region=st.selectbox('Region',['IN','US','GB','AE','AU','CA','SG','JP'],index=0)
+    lookback=st.slider('Lookback days',1,90,30)
+    per_query=st.slider('Videos per query',3,20,8)
+    max_queries=st.slider('Queries per run',3,12,8)
+    if st.button('🚀 Run live discovery',use_container_width=True):
         if not api_key:
-            st.session_state.last_error="Add a YouTube Data API v3 key in this sidebar or Streamlit Secrets first."
+            st.session_state.last_error='Add a YouTube Data API v3 key in Settings first.'
         else:
-            with st.spinner("Searching recent YouTube product content…"):
+            with st.spinner('Finding recent product content…'):
                 try:
                     st.session_state.live_df=youtube_discover(api_key,region,lookback,per_query,max_queries)
-                    st.session_state.last_error=""
+                    st.session_state.last_error=''
                 except Exception as e:
-                    st.session_state.last_error=f"YouTube discovery failed: {type(e).__name__}: {e}"
+                    st.session_state.last_error=f'YouTube discovery failed: {type(e).__name__}: {e}'
     st.divider()
-    st.header("Filters")
-    search=st.text_input("Search products","")
-    data=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
-    cats=["All"]+sorted(set(data.category.dropna().tolist()))
-    cat=st.selectbox("Category",cats)
-    statuses=["All","Viral/Trending","Rising","Other"]
-    status=st.selectbox("Trend status",statuses)
-    sort=st.selectbox("Sort by",["Opportunity","Trend","Uniqueness","Usefulness","Lowest saturation"])
+    st.caption('Demo mode works without an API key. Live discovery uses YouTube reference content only; it does not download videos.')
 
+raw=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
+st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Discover products people are talking about before your next review.</p></div>',unsafe_allow_html=True)
+
+c1,c2,c3,c4=st.columns([2.4,1.15,1.15,1.15])
+with c1: search=st.text_input('Search',placeholder='Search products, gadgets, farming tools…',label_visibility='collapsed')
+with c2:
+    cats=['All']+sorted(set(raw.category.dropna().tolist())); cat=st.selectbox('Category',cats,label_visibility='collapsed')
+with c3: status=st.selectbox('Trend',['All','Viral/Trending','Rising','Other'],label_visibility='collapsed')
+with c4: sort=st.selectbox('Sort',['Opportunity','Newest trend','Trend','Uniqueness','Usefulness','Lowest saturation'],label_visibility='collapsed')
+
+st.markdown('<div class="section-title">Explore products</div>',unsafe_allow_html=True)
 if st.session_state.last_error: st.error(st.session_state.last_error)
 
-data=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
-if search: data=data[data.name.str.contains(search,case=False,na=False)]
-if cat!="All": data=data[data.category==cat]
-if status!="All": data=data[data.trend_status==status]
-sort_map={"Opportunity":"opportunity_score","Trend":"trend_score","Uniqueness":"uniqueness_score","Usefulness":"usefulness_score","Lowest saturation":"saturation_score"}
-data=data.sort_values(sort_map[sort],ascending=(sort=="Lowest saturation"))
+data=raw.copy()
+if search: data=data[data.name.astype(str).str.contains(search,case=False,na=False)]
+if cat!='All': data=data[data.category==cat]
+if status!='All': data=data[data.trend_status==status]
+sort_map={'Opportunity':'opportunity_score','Trend':'trend_score','Uniqueness':'uniqueness_score','Usefulness':'usefulness_score','Lowest saturation':'saturation_score'}
+if sort=='Newest trend' and 'published_at' in data.columns:
+    data['_published']=pd.to_datetime(data['published_at'],errors='coerce',utc=True); data=data.sort_values('_published',ascending=False)
+else: data=data.sort_values(sort_map.get(sort,'opportunity_score'),ascending=(sort=='Lowest saturation'))
 
 m1,m2,m3,m4=st.columns(4)
-m1.metric("Products",len(data));m2.metric("Viral / Trending",int((data.trend_status=="Viral/Trending").sum()));m3.metric("Rising",int((data.trend_status=="Rising").sum()));m4.metric("Avg Opportunity",round(data.opportunity_score.mean()) if len(data) else 0)
+m1.metric('Products found',len(data)); m2.metric('Viral / Trending',int((data.trend_status=='Viral/Trending').sum())); m3.metric('Rising',int((data.trend_status=='Rising').sum())); m4.metric('Avg opportunity',round(data.opportunity_score.mean()) if len(data) else 0)
 
-if st.session_state.live_df.empty:
-    st.info("Demo mode. Click **Run live discovery** after adding your YouTube API key. Demo records are placeholders and are not verified trend findings.")
-else:
-    st.success(f"Live discovery loaded {len(st.session_state.live_df)} product candidates from YouTube.")
+if st.session_state.live_df.empty: st.info('✨ Demo mode — sample products are shown so you can check the interface. Add your YouTube API key in ⚙️ Settings for live discovery.')
+else: st.success(f'Live discovery found {len(st.session_state.live_df)} product candidates.')
 
 if len(data):
-    csv=data.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Export current results CSV",csv,"product_hunter_results.csv","text/csv")
+    csv=data.to_csv(index=False).encode('utf-8'); st.download_button('⬇️ Export results',csv,'product_hunter_results.csv','text/csv')
+    cards=[]
+    for _,p in data.iterrows():
+        name=html.escape(str(p.get('name','Unknown product'))); catv=html.escape(str(p.get('category',''))); segment=html.escape(str(p.get('segment','')))
+        stat=str(p.get('trend_status','Other')); badge_class='hot' if stat=='Viral/Trending' else ('rising' if stat=='Rising' else 'other')
+        img=str(p.get('image_url','') or ''); img=img if img else 'https://placehold.co/800x500/f3f4f6/555?text=Product+Preview'; img=html.escape(img,quote=True)
+        product_url=html.escape(str(p.get('product_url','') or '#'),quote=True); ref_url=html.escape(str(p.get('reference_url','') or '#'),quote=True)
+        why=html.escape(str(p.get('why_interesting','') or 'Useful product candidate with review potential.'))
+        opp=int(p.get('opportunity_score',0)); trend=int(p.get('trend_score',0)); uniq=int(p.get('uniqueness_score',0)); use=int(p.get('usefulness_score',0)); sat=int(p.get('saturation_score',0))
+        season=html.escape(str(p.get('season','') or '')); season_badge=f'<span class="badge">🌦️ {season}</span>' if season else ''
+        card=f'''<div class="card"><img class="card-img" src="{img}" loading="lazy"><div class="card-body"><div class="badges"><span class="badge {badge_class}">{html.escape(stat)}</span><span class="badge">{catv}</span>{season_badge}</div><div class="card-title">{name}</div><div class="meta">{segment}</div><div class="why">{why}</div><div class="score-row"><div class="score">{opp}<small>OPPORTUNITY / 100</small></div><div class="metrics">Trend {trend} · Unique {uniq}<br>Useful {use} · Saturation {sat}</div></div><div class="links"><a class="primary" href="{product_url}" target="_blank">🛒 View product</a><a href="{ref_url}" target="_blank">▶ Reference</a></div></div></div>'''
+        cards.append(card)
+    for i in range(0,len(cards),3):
+        cols=st.columns(3,gap='medium')
+        for j,col in enumerate(cols):
+            if i+j<len(cards):
+                with col: st.markdown(cards[i+j],unsafe_allow_html=True)
+else:
+    st.markdown('<div class="empty"><div style="font-size:2rem">🔎</div><h3>No products found</h3><p>Try another search, category or trend filter.</p></div>',unsafe_allow_html=True)
 
-for _,p in data.iterrows():
-    with st.container(border=True):
-        a,b=st.columns([1,3])
-        with a:
-            if p.get("image_url"): st.image(p["image_url"],use_container_width=True)
-            st.metric("Opportunity",int(p.get("opportunity_score",0)))
-        with b:
-            st.subheader(str(p.get("name","Unknown product")))
-            st.write(f"**{p.get('category','')}** • {p.get('segment','')} • **{p.get('trend_status','')}**")
-            st.write(p.get("why_interesting",""))
-            st.markdown(f"**Trend:** {int(p.get('trend_score',0))}/100  |  **Uniqueness:** {int(p.get('uniqueness_score',0))}/100  |  **Usefulness:** {int(p.get('usefulness_score',0))}/100  |  **Demo:** {int(p.get('demo_score',0))}/100  |  **Saturation:** {int(p.get('saturation_score',0))}/100")
-            if p.get("source")!="Demo":
-                extra=f"Source: {p.get('source','')} • {p.get('source_count',1)} references • {p.get('creator_count',1)} creators"
-                if p.get("season"): extra+=f" • Seasonal: {p.get('season')}"
-                st.caption(extra)
-            c,d=st.columns(2)
-            with c: st.link_button("🛒 Product / purchase reference",str(p.get("product_url","")))
-            with d: st.link_button("▶️ Original reference",str(p.get("reference_url","")))
-
-st.divider()
-st.subheader("What this version does")
-st.write("Live mode searches recent YouTube videos, enriches them with view/like/comment statistics, groups repeated product candidates, estimates trend velocity and social saturation, classifies categories, extracts purchase links when present in descriptions, and falls back to an Amazon India search when no direct product URL is available.")
-st.caption("Reference content is research material only. The app does not download or republish creators' videos. Trend/opportunity scores are analytical signals, not guarantees.")
-st.caption("Instagram: the architecture leaves room for a permitted Meta/public-web connector; this version does not pretend to have unrestricted access to Instagram public content.")
+st.divider(); st.caption('Product Hunter is a research tool. Social references are used for discovery; videos are not downloaded or republished. Opportunity scores are analytical signals, not guarantees.')
