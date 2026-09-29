@@ -432,13 +432,15 @@ else:
                         for label,url in links:
                             st.link_button(label,url,use_container_width=True)
 
-# Small page numbers below the cards as requested.
+# Compact, centered page numbers below the cards.
 st.markdown('<div class="bottom-pages">',unsafe_allow_html=True)
-bcols=st.columns(5)
-for n,bc in enumerate(bcols,1):
+left, b1, b2, b3, b4, b5, right = st.columns([5, 0.65, 0.65, 0.65, 0.65, 0.65, 5])
+for n, bc in enumerate([b1, b2, b3, b4, b5], 1):
     with bc:
-        if st.button(str(n),key=f"bottom_page_{n}",use_container_width=True): st.session_state.page=n; st.rerun()
-st.markdown('</div>',unsafe_allow_html=True)
+        if st.button(str(n), key=f"bottom_page_{n}", use_container_width=True):
+            st.session_state.page=n
+            st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.divider()
 st.caption("Pages 1–5 contain up to 100 cards each. Discovery and Search keep individual videos; repeated products are not merged. Trend pages keep individual references.")
