@@ -13,6 +13,17 @@ TOTAL_PAGES = 5
 MAX_CARDS = PAGE_SIZE * TOTAL_PAGES
 ASSET_DIR = Path(__file__).parent / "assets"
 
+# Architecture: the base catalog is web-first and source-agnostic.
+# Product sources are independent of trend sources; trend signals are optional enrichment.
+PRODUCT_SOURCE_REGISTRY = [
+    "Amazon", "Flipkart", "Meesho", "eBay", "AliExpress", "Alibaba", "Etsy",
+    "Walmart", "Target", "Best Buy", "Ubuy", "IndiaMART", "Brand / Manufacturer Sites",
+    "Regional & Country-Specific Marketplaces", "Other Public Product Websites"
+]
+TREND_SOURCE_REGISTRY = [
+    "YouTube", "Instagram", "TikTok", "Pinterest", "Google Trends", "Public Web Signals"
+]
+
 CATEGORIES = [
     "Unique & Clever", "Problem-Solving", "Home & Kitchen", "Tech & Gadgets", "Car & Bike",
     "Travel", "Personal Use & Grooming", "Village / Rural", "Farming & Agriculture", "Seasonal",
@@ -280,9 +291,11 @@ st.session_state.setdefault("page", 1)
 st.session_state.setdefault("view", "all")
 st.session_state.setdefault("youtube_trends_df", pd.DataFrame())
 st.session_state.setdefault("instagram_trends_df", pd.DataFrame())
+st.session_state.setdefault("trending_stars_df", pd.DataFrame())
+st.session_state.setdefault("season_filter", "All Seasons")
 
 st.markdown("""<style>
-.block-container{max-width:1450px;padding:1rem 2rem 3rem}.hero{padding:24px;border:1px solid #e6e6e6;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#fff);margin-bottom:18px}.hero h1{margin:0;font-size:2.1rem;font-weight:850}.hero p{margin:5px 0 0;color:#666}.card{border:1px solid #e4e4e4;border-radius:18px;overflow:hidden;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05);height:100%}.card-title{font-size:1.05rem;font-weight:800;line-height:1.3;margin:10px 0 6px}.badge{display:inline-block;font-size:11px;font-weight:750;padding:5px 8px;border-radius:999px;background:#f1f3f5;margin:0 5px 5px 0}.hot{background:#fff0ed;color:#c0392b}.rise{background:#fff7dc;color:#9a6900}.why{font-size:13px;color:#555;line-height:1.45;min-height:48px}.score{font-size:1.35rem;font-weight:850}.muted{color:#777;font-size:12px}.buttonrow{display:flex;gap:8px;margin-top:12px}.pagebar{padding:12px 14px;border:1px solid #e7e7e7;border-radius:14px;background:#fff;margin:12px 0}.small{font-size:12px;color:#777}@media(max-width:700px){.block-container{padding:.7rem}.hero h1{font-size:1.65rem}.buttonrow{display:block}.buttonrow>*{margin-bottom:6px;width:100%}}
+.block-container{max-width:1450px;padding:1rem 2rem 3rem}.hero{padding:24px;border:1px solid #e6e6e6;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#fff);margin-bottom:18px}.hero h1{margin:0;font-size:2.1rem;font-weight:850}.hero p{margin:5px 0 0;color:#666}.card{border:1px solid #e4e4e4;border-radius:18px;overflow:hidden;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05);height:100%}.card-title{font-size:1.05rem;font-weight:800;line-height:1.3;margin:10px 0 6px}.badge{display:inline-block;font-size:11px;font-weight:750;padding:5px 8px;border-radius:999px;background:#f1f3f5;margin:0 5px 5px 0}.hot{background:#fff0ed;color:#c0392b}.rise{background:#fff7dc;color:#9a6900}.why{font-size:13px;color:#555;line-height:1.45;min-height:48px}.score{font-size:1.35rem;font-weight:850}.muted{color:#777;font-size:12px}.buttonrow{display:flex;gap:8px;margin-top:12px}.pagebar{padding:12px 14px;border:1px solid #e7e7e7;border-radius:14px;background:#fff;margin:12px 0}.small{font-size:12px;color:#777}.trend-star-note{font-size:12px;color:#666;margin:6px 0 14px}@media(max-width:700px){.block-container{padding:.7rem}.hero h1{font-size:1.65rem}.buttonrow{display:block}.buttonrow>*{margin-bottom:6px;width:100%}}
 </style>""",unsafe_allow_html=True)
 
 with st.sidebar:
@@ -300,39 +313,29 @@ with st.sidebar:
                     st.session_state.live_df=youtube_discover(api_key,region,lookback,per_query,max_queries); st.session_state.last_error=""
                 except Exception as e: st.session_state.last_error=f"Discovery failed: {type(e).__name__}: {e}"
 
-st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Browse individual product-reference videos and compare products yourself. Product duplicates are not filtered.</p></div>',unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Global product discovery across categories and public product sources. Trend signals are connected separately through Trending Stars. Product duplicates are not merged.</p></div>',unsafe_allow_html=True)
 
 raw=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
 
 # Search and trend controls stay together in one row for quick product discovery.
-search_col, search_btn_col, yt_col, ig_col, fav_col = st.columns([4.6,1.0,1.25,1.25,1.25])
+search_col, search_btn_col, stars_col, fav_col = st.columns([4.9,1.0,1.8,1.25])
 with search_col:
     search_term=st.text_input("Search products",placeholder="Search products, problems or gadgets…",label_visibility="collapsed",key="search_input")
 with search_btn_col:
     do_search=st.button("🔎 Search",use_container_width=True)
-with yt_col:
-    yt_trends=st.button("▶ YouTube Trends",use_container_width=True)
-with ig_col:
-    ig_trends=st.button("◎ Instagram Trends",use_container_width=True)
+with stars_col:
+    trending_stars=st.button("⭐ Trending Stars",use_container_width=True)
 with fav_col:
     show_fav=st.button(f"♥ Favorites ({len(st.session_state.favorites)})",use_container_width=True)
 
-if yt_trends:
-    st.session_state.view="youtube_trends"; st.session_state.page=1
-    if not api_key:
-        st.session_state.last_error="Add your YouTube API key in Settings to fetch live YouTube trends."
-    else:
-        with st.spinner("Fetching current product trend videos…"):
-            try:
-                st.session_state.youtube_trends_df=youtube_trends(api_key,region,100); st.session_state.last_error=""
-            except Exception as e: st.session_state.last_error=f"YouTube Trends failed: {type(e).__name__}: {e}"
-
-if ig_trends:
-    st.session_state.view="instagram_trends"; st.session_state.page=1
+if trending_stars:
+    st.session_state.view="trending_stars"; st.session_state.page=1
+    # The button is a unified trend hub. API-backed sources are optional; public trend links remain usable without API keys.
     source=st.session_state.get("youtube_trends_df",pd.DataFrame())
     if source.empty: source=st.session_state.get("live_df",pd.DataFrame())
     if source.empty: source=pd.DataFrame(DEMO)
-    st.session_state.instagram_trends_df=instagram_trend_references(source); st.session_state.last_error=""
+    st.session_state.trending_stars_df=source.copy()
+    st.session_state.last_error=""
 
 if do_search:
     if not search_term.strip():
@@ -354,10 +357,8 @@ if show_fav:
 
 if st.session_state.last_error: st.warning(st.session_state.last_error)
 
-if st.session_state.view=="youtube_trends":
-    data=st.session_state.get("youtube_trends_df",pd.DataFrame()).copy() if not st.session_state.get("youtube_trends_df",pd.DataFrame()).empty else pd.DataFrame()
-elif st.session_state.view=="instagram_trends":
-    data=st.session_state.get("instagram_trends_df",pd.DataFrame()).copy() if not st.session_state.get("instagram_trends_df",pd.DataFrame()).empty else pd.DataFrame()
+if st.session_state.view=="trending_stars":
+    data=st.session_state.get("trending_stars_df",pd.DataFrame()).copy() if not st.session_state.get("trending_stars_df",pd.DataFrame()).empty else pd.DataFrame()
 elif show_fav:
     data=pd.DataFrame(st.session_state.favorites) if st.session_state.favorites else pd.DataFrame()
 elif not st.session_state.search_df.empty:
@@ -368,12 +369,15 @@ else:
     data=raw.copy()
 
 # Filters apply only after an explicit search or while browsing the default feed.
-c1,c2,c3=st.columns([2,2,2])
-with c1: cat=st.selectbox("Category",["All"]+sorted(data.category.dropna().unique().tolist()) if not data.empty else ["All"],label_visibility="collapsed")
-with c2: status=st.selectbox("Trend",["All","Viral/Trending","Rising","Other"],label_visibility="collapsed")
-with c3: sort=st.selectbox("Sort",["Opportunity","Newest","Trend","Views","Usefulness"],label_visibility="collapsed")
+c1,c2,c3,c4=st.columns([2.4,2.0,2.0,2.0])
+with c1: season=st.selectbox("Season",["All Seasons"]+list(SEASONAL_TERMS.keys()),label_visibility="collapsed",key="season_filter")
+with c2: cat=st.selectbox("Category",["All"]+sorted(data.category.dropna().unique().tolist()) if not data.empty else ["All"],label_visibility="collapsed")
+with c3: status=st.selectbox("Trend",["All","Viral/Trending","Rising","Other"],label_visibility="collapsed")
+with c4: sort=st.selectbox("Sort",["Opportunity","Newest","Trend","Views","Usefulness"],label_visibility="collapsed")
 
 if not data.empty:
+    if season!="All Seasons":
+        data=data[data["season"].fillna("").astype(str).str.contains(season, case=False, na=False)] if "season" in data.columns else data.iloc[0:0]
     if cat!="All": data=data[data.category==cat]
     if status!="All": data=data[data.trend_status==status]
     if sort=="Newest": data["_date"]=pd.to_datetime(data.get("published_at"),errors="coerce",utc=True); data=data.sort_values("_date",ascending=False)
@@ -443,4 +447,4 @@ for n, bc in enumerate([b1, b2, b3, b4, b5], 1):
 st.markdown('</div>', unsafe_allow_html=True)
 
 st.divider()
-st.caption("Pages 1–5 contain up to 100 cards each. Discovery and Search keep individual videos; repeated products are not merged. Trend pages keep individual references.")
+st.caption("Pages 1–5 contain up to 100 cards each. Main feed is source-agnostic; product duplicates are not merged. ⭐ Trending Stars is the unified hub for YouTube, Instagram, TikTok, Pinterest, Google Trends and public-web trend signals. Season is a primary filter.")
