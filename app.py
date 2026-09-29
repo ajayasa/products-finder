@@ -1,11 +1,17 @@
 import os, re, math, html
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse
+from pathlib import Path
 import requests
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Global Product Hunter", page_icon="🔎", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Product Hunter", page_icon="🔎", layout="wide", initial_sidebar_state="collapsed")
+
+PAGE_SIZE = 100
+TOTAL_PAGES = 5
+MAX_CARDS = PAGE_SIZE * TOTAL_PAGES
+ASSET_DIR = Path(__file__).parent / "assets"
 
 CATEGORIES = [
     "Unique & Clever", "Problem-Solving", "Home & Kitchen", "Tech & Gadgets", "Car & Bike",
@@ -13,19 +19,7 @@ CATEGORIES = [
     "Outdoor & Garden", "Tools & DIY", "Cleaning & Organization", "Safety & Emergency",
     "Kids & Parents", "Elderly / Senior-Friendly", "Office & Work From Home", "Money-Saving", "Local / Indian-Specific"
 ]
-SEASONAL_TERMS = {
-    "Summer": ["summer", "heat", "cooling", "hot weather", "sun", "ice"],
-    "Monsoon": ["monsoon", "rain", "waterproof", "rainy", "drain", "mold"],
-    "Winter": ["winter", "cold", "warm", "heater", "blanket"],
-    "Sankranti": ["sankranti", "pongal", "kite", "rangoli"],
-    "Ugadi": ["ugadi", "festival", "panchanga"],
-    "Dasara": ["dasara", "dussehra", "navratri"],
-    "Diwali": ["diwali", "deepavali", "lights", "rangoli", "festival"],
-    "Christmas / New Year": ["christmas", "new year", "gift", "party"],
-    "Wedding Season": ["wedding", "marriage", "bride", "groom"],
-    "School / College": ["school", "college", "student", "back to school", "study"],
-    "Travel Season": ["travel", "holiday", "vacation", "trip", "airport"]
-}
+
 QUERY_PACK = {
     "Unique & Clever": ["clever useful gadgets", "things I didn't know existed", "innovative useful products"],
     "Problem-Solving": ["problem solving products", "life changing useful gadgets", "smart problem solving tools"],
@@ -45,17 +39,22 @@ QUERY_PACK = {
     "Elderly / Senior-Friendly": ["senior friendly gadgets", "elderly useful products", "easy use home gadgets"],
     "Office & Work From Home": ["work from home gadgets", "office desk gadgets", "productivity gadgets"],
     "Money-Saving": ["money saving products", "products that save money", "reusable useful products"],
-    "Local / Indian-Specific": ["Indian household useful products", "Indian kitchen gadgets", "Indian daily use products"]
+    "Local / Indian-Specific": ["Indian household useful products", "Indian kitchen gadgets", "Indian daily use products"],
 }
 
-DEMO = [
- {"name":"Foldable Food Sealer","category":"Home & Kitchen","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":86,"trend_score":72,"uniqueness_score":88,"usefulness_score":91,"demo_score":90,"saturation_score":38,"why_interesting":"Easy before/after demonstration and solves a common food-storage problem.","product_url":"https://www.amazon.in/s?k=mini+food+bag+sealer","reference_url":"https://www.youtube.com/results?search_query=mini+food+bag+sealer","image_url":"","source":"Demo"},
- {"name":"Smart Soil Moisture Meter","category":"Farming & Agriculture","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":84,"trend_score":68,"uniqueness_score":84,"usefulness_score":92,"demo_score":86,"saturation_score":34,"why_interesting":"Useful for home gardening and farming; readings are easy to demonstrate on video.","product_url":"https://www.amazon.in/s?k=soil+moisture+meter","reference_url":"https://www.youtube.com/results?search_query=soil+moisture+meter","image_url":"","source":"Demo"},
- {"name":"Portable Tyre Inflator","category":"Car & Bike","segment":"Viral / Trending Products","trend_status":"Viral/Trending","opportunity_score":79,"trend_score":91,"uniqueness_score":63,"usefulness_score":94,"demo_score":95,"saturation_score":71,"why_interesting":"Strong visual demonstration and clear emergency-use case.","product_url":"https://www.amazon.in/s?k=portable+tyre+inflator","reference_url":"https://www.youtube.com/results?search_query=portable+tyre+inflator","image_url":"","source":"Demo"},
- {"name":"Rechargeable Mini Chopper","category":"Home & Kitchen","segment":"Viral / Trending Products","trend_status":"Viral/Trending","opportunity_score":76,"trend_score":94,"uniqueness_score":61,"usefulness_score":89,"demo_score":96,"saturation_score":82,"why_interesting":"Highly demonstrable product, but social content is already crowded.","product_url":"https://www.amazon.in/s?k=rechargeable+mini+chopper","reference_url":"https://www.youtube.com/results?search_query=rechargeable+mini+chopper","image_url":"","source":"Demo"},
- {"name":"Hand Weeder Tool","category":"Farming & Agriculture","segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":73,"trend_score":48,"uniqueness_score":87,"usefulness_score":88,"demo_score":84,"saturation_score":22,"why_interesting":"Less saturated and particularly relevant for garden and small-farm users.","product_url":"https://www.amazon.in/s?k=hand+weeder+tool","reference_url":"https://www.youtube.com/results?search_query=hand+weeder+tool","image_url":"","source":"Demo"},
- {"name":"Travel Cable Organizer","category":"Travel","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":81,"trend_score":70,"uniqueness_score":78,"usefulness_score":87,"demo_score":82,"saturation_score":42,"why_interesting":"Compact travel problem-solver with an easy visual transformation demo.","product_url":"https://www.amazon.in/s?k=travel+cable+organizer","reference_url":"https://www.youtube.com/results?search_query=travel+cable+organizer","image_url":"","source":"Demo"},
-]
+SEASONAL_TERMS = {
+    "Summer": ["summer", "heat", "cooling", "hot weather", "sun", "ice"],
+    "Monsoon": ["monsoon", "rain", "waterproof", "rainy", "drain", "mold"],
+    "Winter": ["winter", "cold", "warm", "heater", "blanket"],
+    "Sankranti": ["sankranti", "pongal", "kite", "rangoli"],
+    "Ugadi": ["ugadi", "festival", "panchanga"],
+    "Dasara": ["dasara", "dussehra", "navratri"],
+    "Diwali": ["diwali", "deepavali", "lights", "rangoli", "festival"],
+    "Christmas / New Year": ["christmas", "new year", "gift", "party"],
+    "Wedding Season": ["wedding", "marriage", "bride", "groom"],
+    "School / College": ["school", "college", "student", "back to school", "study"],
+    "Travel Season": ["travel", "holiday", "vacation", "trip", "airport"],
+}
 
 KEYWORDS = {
  "Farming & Agriculture":"farm farmer farming agriculture soil seed crop sprayer weeder irrigation fertilizer pesticide transplanter harvest",
@@ -76,28 +75,34 @@ KEYWORDS = {
  "Seasonal":"summer monsoon winter diwali sankranti ugadi dasara christmas wedding school",
  "Local / Indian-Specific":"india indian telugu tamil kitchen household village desi",
  "Problem-Solving":"problem solving fix solution hack useful",
- "Unique & Clever":"clever innovative invention unusual unique smart"
+ "Unique & Clever":"clever innovative invention unusual unique smart",
 }
+
+DEMO = [
+ {"name":"Foldable Food Sealer","category":"Home & Kitchen","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":86,"trend_score":72,"uniqueness_score":88,"usefulness_score":91,"demo_score":90,"saturation_score":38,"why_interesting":"Easy before/after demonstration and solves a common food-storage problem.","image_url":"asset:sealer.jpg","youtube_url":"https://www.youtube.com/results?search_query=mini+food+bag+sealer","instagram_url":"https://www.instagram.com/explore/tags/foodsealer/","product_links":[["Amazon India","https://www.amazon.in/s?k=mini+food+bag+sealer"],["Flipkart","https://www.flipkart.com/search?q=mini%20food%20bag%20sealer"],["Meesho","https://www.meesho.com/search?q=mini%20food%20bag%20sealer"]]},
+ {"name":"Smart Soil Moisture Meter","category":"Farming & Agriculture","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":84,"trend_score":68,"uniqueness_score":84,"usefulness_score":92,"demo_score":86,"saturation_score":34,"why_interesting":"Useful for home gardening and farming; readings are easy to demonstrate on video.","image_url":"asset:soil.jpg","youtube_url":"https://www.youtube.com/results?search_query=soil+moisture+meter","instagram_url":"https://www.instagram.com/explore/tags/soilmoisture/","product_links":[["Amazon India","https://www.amazon.in/s?k=soil+moisture+meter"],["Flipkart","https://www.flipkart.com/search?q=soil%20moisture%20meter"],["Meesho","https://www.meesho.com/search?q=soil%20moisture%20meter"]]},
+ {"name":"Portable Tyre Inflator","category":"Car & Bike","segment":"Viral / Trending Products","trend_status":"Viral/Trending","opportunity_score":79,"trend_score":91,"uniqueness_score":63,"usefulness_score":94,"demo_score":95,"saturation_score":71,"why_interesting":"Strong visual demonstration and clear emergency-use case.","image_url":"asset:inflator.jpg","youtube_url":"https://www.youtube.com/results?search_query=portable+tyre+inflator","instagram_url":"https://www.instagram.com/explore/tags/portabletyreinflator/","product_links":[["Amazon India","https://www.amazon.in/s?k=portable+tyre+inflator"],["Flipkart","https://www.flipkart.com/search?q=portable%20tyre%20inflator"],["Meesho","https://www.meesho.com/search?q=portable%20tyre%20inflator"]]},
+ {"name":"Rechargeable Mini Chopper","category":"Home & Kitchen","segment":"Viral / Trending Products","trend_status":"Viral/Trending","opportunity_score":76,"trend_score":94,"uniqueness_score":61,"usefulness_score":89,"demo_score":96,"saturation_score":82,"why_interesting":"Highly demonstrable product, but social content is already crowded.","image_url":"asset:chopper.jpg","youtube_url":"https://www.youtube.com/results?search_query=rechargeable+mini+chopper","instagram_url":"https://www.instagram.com/explore/tags/minichopper/","product_links":[["Amazon India","https://www.amazon.in/s?k=rechargeable+mini+chopper"],["Flipkart","https://www.flipkart.com/search?q=rechargeable%20mini%20chopper"],["Meesho","https://www.meesho.com/search?q=rechargeable%20mini%20chopper"]]},
+ {"name":"Hand Weeder Tool","category":"Farming & Agriculture","segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":73,"trend_score":48,"uniqueness_score":87,"usefulness_score":88,"demo_score":84,"saturation_score":22,"why_interesting":"Less saturated and particularly relevant for garden and small-farm users.","image_url":"asset:weeder.jpg","youtube_url":"https://www.youtube.com/results?search_query=hand+weeder+tool","instagram_url":"https://www.instagram.com/explore/tags/handweeder/","product_links":[["Amazon India","https://www.amazon.in/s?k=hand+weeder+tool"],["Flipkart","https://www.flipkart.com/search?q=hand%20weeder%20tool"],["Meesho","https://www.meesho.com/search?q=hand%20weeder%20tool"]]},
+ {"name":"Travel Cable Organizer","category":"Travel","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":81,"trend_score":70,"uniqueness_score":78,"usefulness_score":87,"demo_score":82,"saturation_score":42,"why_interesting":"Compact travel problem-solver with an easy visual transformation demo.","image_url":"asset:travel.jpg","youtube_url":"https://www.youtube.com/results?search_query=travel+cable+organizer","instagram_url":"https://www.instagram.com/explore/tags/travelcableorganizer/","product_links":[["Amazon India","https://www.amazon.in/s?k=travel+cable+organizer"],["Flipkart","https://www.flipkart.com/search?q=travel%20cable%20organizer"],["Meesho","https://www.meesho.com/search?q=travel%20cable%20organizer"]]},
+]
+
 
 def clean_text(x):
     return re.sub(r"\s+", " ", html.unescape(str(x or ""))).strip()
 
+
 def classify(text):
     t=clean_text(text).lower()
-    scores=[]
-    for cat, words in KEYWORDS.items():
-        hits=sum(1 for w in words.split() if w in t)
-        scores.append((hits,cat))
-    best=max(scores)
-    cat=best[1] if best[0]>0 else "Unique & Clever"
-    return cat
+    scored=[(sum(1 for w in words.split() if w in t), cat) for cat,words in KEYWORDS.items()]
+    best=max(scored)
+    return best[1] if best[0] else "Unique & Clever"
+
 
 def seasonal_tag(text):
     t=clean_text(text).lower()
-    hits=[]
-    for season, words in SEASONAL_TERMS.items():
-        if any(w in t for w in words): hits.append(season)
-    return ", ".join(hits)
+    return ", ".join(season for season,words in SEASONAL_TERMS.items() if any(w in t for w in words))
+
 
 def extract_urls(text):
     urls=re.findall(r"https?://[^\s<>\]\)\"']+", text or "")
@@ -105,8 +110,21 @@ def extract_urls(text):
     for u in urls:
         u=u.rstrip(".,;!?)]}")
         host=urlparse(u).netloc.lower()
-        if host and not any(x in host for x in ["youtube.com","youtu.be","instagram.com","facebook.com"]): out.append(u)
-    return out
+        if host and not any(x in host for x in ["youtube.com","youtu.be","instagram.com","facebook.com","tiktok.com","pinterest.com"]):
+            out.append(u)
+    return list(dict.fromkeys(out))
+
+
+def marketplace_links(name):
+    q=quote_plus(name)
+    return [
+        ["Amazon India",f"https://www.amazon.in/s?k={q}"],
+        ["Flipkart",f"https://www.flipkart.com/search?q={quote_plus(name)}"],
+        ["Meesho",f"https://www.meesho.com/search?q={q}"],
+        ["eBay",f"https://www.ebay.com/sch/i.html?_nkw={q}"],
+        ["AliExpress",f"https://www.aliexpress.com/w/wholesale-{q}.html"],
+    ]
+
 
 def candidate_name(title):
     t=clean_text(title)
@@ -115,164 +133,144 @@ def candidate_name(title):
     t=re.sub(r"\([^)]*\)|\[[^]]*\]", " ", t)
     t=re.sub(r"\s+[-–—]\s+.*$", "", t)
     t=clean_text(t)
-    if len(t)<5: t=clean_text(title)
-    return t[:90]
+    return (t if len(t)>=5 else clean_text(title))[:90]
 
-def scores_for(v, source_count=1, creator_count=1):
+
+def score_video(v):
     views=max(int(v.get("views",0)),0); likes=max(int(v.get("likes",0)),0); comments=max(int(v.get("comments",0)),0)
     age=max(float(v.get("age_days",1)),0.25)
     velocity=math.log10(views+1)/math.log10(age+2)*18
     engagement=((likes+comments*3)/(views+1))*100
-    trend=max(0,min(100,round(velocity*3.0 + min(engagement*2.5,25) + min(source_count*4,20))))
-    usefulness=80
-    demo=82
-    title=clean_text(v.get("title","")).lower()
-    if any(w in title for w in ["how", "test", "testing", "before after", "hack", "demo"]): demo+=8
-    if any(w in title for w in ["useful", "problem", "solution", "life changing"]): usefulness+=8
-    uniqueness=82 if source_count<=2 else max(45,82-source_count*5)
-    saturation=max(10,min(95,round(source_count*9 + creator_count*4)))
-    opportunity=round(max(0,min(100,trend*0.30+uniqueness*0.22+usefulness*0.22+demo*0.16+(100-saturation)*0.10)))
-    if trend>=78 and saturation>=65: status="Viral/Trending"
-    elif trend>=55: status="Rising"
-    else: status="Other"
-    return trend,uniqueness,usefulness,demo,saturation,opportunity,status
+    trend=max(0,min(100,round(velocity*3.0 + min(engagement*2.5,25))))
+    title=clean_text(v.get("title","" )).lower()
+    usefulness=80 + (8 if any(w in title for w in ["useful","problem","solution","life changing","must have"]) else 0)
+    demo=82 + (10 if any(w in title for w in ["how","test","testing","before after","hack","demo","try"]) else 0)
+    uniqueness=84
+    saturation=35
+    opportunity=round(max(0,min(100,trend*.30+uniqueness*.22+min(usefulness,100)*.22+min(demo,100)*.16+(100-saturation)*.10)))
+    status="Viral/Trending" if trend>=78 else ("Rising" if trend>=55 else "Other")
+    return trend,uniqueness,min(usefulness,100),min(demo,100),saturation,opportunity,status
 
-def youtube_discover(api_key, region="IN", lookback=30, per_query=8, max_queries=12, language="en"):
+
+def youtube_discover(api_key, region="IN", lookback=30, per_query=20, max_queries=20, language="en"):
     cutoff=(datetime.now(timezone.utc)-timedelta(days=lookback)).isoformat().replace("+00:00","Z")
-    queries=[]
-    for cat, qs in QUERY_PACK.items():
-        for q in qs:
-            queries.append((cat,q))
-    queries=queries[:max_queries]
-    raw=[]
-    sess=requests.Session()
+    queries=[(cat,q) for cat,qs in QUERY_PACK.items() for q in qs][:max_queries]
+    sess=requests.Session(); raw=[]
     for cat,q in queries:
         params={"part":"snippet","q":q,"type":"video","order":"date","publishedAfter":cutoff,"maxResults":min(int(per_query),50),"regionCode":region,"relevanceLanguage":language,"key":api_key}
-        r=sess.get("https://www.googleapis.com/youtube/v3/search",params=params,timeout=20)
-        r.raise_for_status()
+        r=sess.get("https://www.googleapis.com/youtube/v3/search",params=params,timeout=20); r.raise_for_status()
         for item in r.json().get("items",[]):
             vid=item.get("id",{}).get("videoId")
             if not vid: continue
             sn=item.get("snippet",{})
-            raw.append({"video_id":vid,"title":sn.get("title",""),"description":sn.get("description",""),"channel":sn.get("channelTitle",""),"published_at":sn.get("publishedAt",""),"thumbnail":sn.get("thumbnails",{}).get("high",{}).get("url") or sn.get("thumbnails",{}).get("medium",{}).get("url"),"query_category":cat})
-    unique={x["video_id"]:x for x in raw}
-    vids=list(unique.values())
+            raw.append({"video_id":vid,"title":sn.get("title",""),"description":sn.get("description","") or "","channel":sn.get("channelTitle",""),"published_at":sn.get("publishedAt",""),"thumbnail":sn.get("thumbnails",{}).get("high",{}).get("url") or sn.get("thumbnails",{}).get("medium",{}).get("url"),"query_category":cat})
+    # Remove only repeated copies of the exact same video ID. Product duplicates are intentionally retained.
+    unique_by_video={x["video_id"]:x for x in raw}
+    vids=list(unique_by_video.values())
     results=[]
     for i in range(0,len(vids),50):
         ids=",".join(x["video_id"] for x in vids[i:i+50])
-        r=sess.get("https://www.googleapis.com/youtube/v3/videos",params={"part":"snippet,statistics","id":ids,"key":api_key},timeout=20)
-        r.raise_for_status()
+        r=sess.get("https://www.googleapis.com/youtube/v3/videos",params={"part":"snippet,statistics","id":ids,"key":api_key},timeout=20); r.raise_for_status()
         for item in r.json().get("items",[]):
-            base=unique.get(item.get("id"),{})
-            stt=item.get("statistics",{})
-            pub=base.get("published_at") or item.get("snippet",{}).get("publishedAt")
+            base=unique_by_video.get(item.get("id"),{}); stt=item.get("statistics",{}); pub=base.get("published_at") or item.get("snippet",{}).get("publishedAt")
             try: age=(datetime.now(timezone.utc)-datetime.fromisoformat(pub.replace("Z","+00:00"))).total_seconds()/86400
             except: age=1
-            x={**base,"views":int(stt.get("viewCount",0) or 0),"likes":int(stt.get("likeCount",0) or 0),"comments":int(stt.get("commentCount",0) or 0),"age_days":max(age,0.25)}
-            results.append(x)
-    # group by candidate product name to estimate source/creator saturation
-    names={candidate_name(x["title"]).lower() for x in results}
+            results.append({**base,"views":int(stt.get("viewCount",0) or 0),"likes":int(stt.get("likeCount",0) or 0),"comments":int(stt.get("commentCount",0) or 0),"age_days":max(age,.25)})
     rows=[]
-    for name in names:
-        group=[x for x in results if candidate_name(x["title"]).lower()==name]
-        if not group: continue
-        g=max(group,key=lambda z:z["views"])
-        source_count=len(group); creator_count=len({x["channel"] for x in group})
-        trend,uniq,use,demo,sat,opp,status=scores_for(g,source_count,creator_count)
-        cat=classify(name+" "+g.get("title","")+" "+g.get("description",""))
-        purchase=extract_urls(g.get("description",""))
-        product_url=purchase[0] if purchase else "https://www.amazon.in/s?k="+quote_plus(name)
-        rows.append({"name":name,"category":cat,"segment":"Viral / Trending Products" if status=="Viral/Trending" else "Other Unique & Useful","trend_status":status,"opportunity_score":opp,"trend_score":trend,"uniqueness_score":uniq,"usefulness_score":use,"demo_score":demo,"saturation_score":sat,"why_interesting":f"{source_count} recent YouTube reference video(s) from {creator_count} creator(s); fastest observed video has {g['views']:,} views.","product_url":product_url,"reference_url":"https://www.youtube.com/watch?v="+g["video_id"],"image_url":g.get("thumbnail","") or "","source":"YouTube","channel":g.get("channel",""),"views":g.get("views",0),"likes":g.get("likes",0),"comments":g.get("comments",0),"published_at":g.get("published_at",""),"season":seasonal_tag(name+" "+g.get("title","")),"source_count":source_count,"creator_count":creator_count})
-    return pd.DataFrame(rows).sort_values("opportunity_score",ascending=False) if rows else pd.DataFrame()
+    for x in results[:MAX_CARDS]:
+        name=candidate_name(x["title"]); trend,uniq,use,demo,sat,opp,status=score_video(x)
+        cat=classify(name+" "+x.get("title","")+" "+x.get("description",""))
+        external=extract_urls(x.get("description",""))
+        product_links=[[urlparse(u).netloc.replace("www.","").split(".")[0].title(),u] for u in external]
+        if not product_links: product_links=marketplace_links(name)
+        instagram=[u for u in re.findall(r"https?://[^\s]+",x.get("description","") or "") if "instagram.com" in u.lower()]
+        rows.append({"name":name,"category":cat,"segment":"Viral / Trending Products" if status=="Viral/Trending" else "Other Unique & Useful","trend_status":status,"opportunity_score":opp,"trend_score":trend,"uniqueness_score":uniq,"usefulness_score":use,"demo_score":demo,"saturation_score":sat,"why_interesting":f"Reference video by {x.get('channel','creator')}; {x.get('views',0):,} views, {x.get('likes',0):,} likes and {x.get('comments',0):,} comments.","image_url":x.get("thumbnail","") or "","youtube_url":f"https://www.youtube.com/watch?v={x['video_id']}","instagram_url":instagram[0] if instagram else f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":product_links,"channel":x.get("channel",""),"views":x.get("views",0),"likes":x.get("likes",0),"comments":x.get("comments",0),"published_at":x.get("published_at",""),"season":seasonal_tag(name+" "+x.get("title",""))})
+    return pd.DataFrame(rows)
 
-# Session state
-if 'live_df' not in st.session_state: st.session_state.live_df=pd.DataFrame()
-if 'last_error' not in st.session_state: st.session_state.last_error=''
 
-st.set_page_config(page_title='Product Hunter', page_icon='🔎', layout='wide', initial_sidebar_state='collapsed')
+if "live_df" not in st.session_state: st.session_state.live_df=pd.DataFrame()
+if "last_error" not in st.session_state: st.session_state.last_error=""
 
-st.markdown('''
-<style>
-.block-container{max-width:1400px;padding:1rem 2rem 3rem}
-[data-testid="stHeader"]{background:transparent}
-.hero{padding:22px 24px;border:1px solid #e7e7e7;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#ffffff);margin-bottom:18px}
-.hero h1{font-size:2.15rem;margin:0 0 5px;font-weight:800;letter-spacing:-.8px}.hero p{margin:0;color:#666}
-.section-title{font-size:1.35rem;font-weight:800;margin:20px 0 10px}
-.card{height:100%;border:1px solid #e7e7e7;border-radius:18px;background:#fff;overflow:hidden;box-shadow:0 2px 10px rgba(0,0,0,.04)}
-.card-img{height:190px;width:100%;object-fit:cover;background:#f3f4f6}.card-body{padding:15px}.badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:9px}.badge{font-size:11px;padding:5px 8px;border-radius:999px;background:#f1f3f5;color:#444;font-weight:700}.badge.hot{background:#fff0ed;color:#c0392b}.badge.rising{background:#fff7dc;color:#9a6900}.badge.other{background:#eef5ff;color:#3567a8}
-.card-title{font-size:1.06rem;font-weight:800;line-height:1.25;margin:5px 0 7px;color:#171717}.meta{font-size:12px;color:#707070;margin-bottom:9px}.why{font-size:13px;color:#555;line-height:1.45;min-height:54px}.score-row{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #eee;margin-top:12px;padding-top:11px}.score{font-size:1.35rem;font-weight:850}.score small{font-size:10px;color:#777;font-weight:600;display:block}.metrics{font-size:11px;color:#666;line-height:1.6}.links{display:flex;gap:8px;margin-top:13px}.links a{flex:1;text-align:center;text-decoration:none;padding:9px 7px;border-radius:10px;font-size:12px;font-weight:750;border:1px solid #ddd;color:#222;background:#fff}.links a.primary{background:#111;color:#fff;border-color:#111}
-.empty{padding:50px 20px;text-align:center;border:1px dashed #ccc;border-radius:18px;color:#666}
-@media(max-width:700px){.block-container{padding:.7rem .7rem 2rem}.hero{padding:18px;border-radius:17px}.hero h1{font-size:1.65rem}.card-img{height:165px}.card-title{font-size:1rem}.links a{font-size:11px;padding:8px 4px}}
-</style>
-''',unsafe_allow_html=True)
+st.markdown("""<style>
+.block-container{max-width:1450px;padding:1rem 2rem 3rem}.hero{padding:24px;border:1px solid #e6e6e6;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#fff);margin-bottom:18px}.hero h1{margin:0;font-size:2.1rem;font-weight:850}.hero p{margin:5px 0 0;color:#666}.card{border:1px solid #e4e4e4;border-radius:18px;overflow:hidden;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05);height:100%}.card-title{font-size:1.05rem;font-weight:800;line-height:1.3;margin:10px 0 6px}.badge{display:inline-block;font-size:11px;font-weight:750;padding:5px 8px;border-radius:999px;background:#f1f3f5;margin:0 5px 5px 0}.hot{background:#fff0ed;color:#c0392b}.rise{background:#fff7dc;color:#9a6900}.why{font-size:13px;color:#555;line-height:1.45;min-height:48px}.score{font-size:1.35rem;font-weight:850}.muted{color:#777;font-size:12px}.buttonrow{display:flex;gap:8px;margin-top:12px}.pagebar{padding:12px 14px;border:1px solid #e7e7e7;border-radius:14px;background:#fff;margin:12px 0}.small{font-size:12px;color:#777}@media(max-width:700px){.block-container{padding:.7rem}.hero h1{font-size:1.65rem}.buttonrow{display:block}.buttonrow>*{margin-bottom:6px;width:100%}}
+</style>""",unsafe_allow_html=True)
 
 with st.sidebar:
-    st.header('⚙️ Discovery settings')
-    api_key=st.text_input('YouTube API key', type='password', value=st.secrets.get('YOUTUBE_API_KEY', os.getenv('YOUTUBE_API_KEY', '')) if hasattr(st,'secrets') else os.getenv('YOUTUBE_API_KEY',''))
-    region=st.selectbox('Region',['IN','US','GB','AE','AU','CA','SG','JP'],index=0)
-    lookback=st.slider('Lookback days',1,90,30)
-    per_query=st.slider('Videos per query',3,20,8)
-    max_queries=st.slider('Queries per run',3,12,8)
-    if st.button('🚀 Run live discovery',use_container_width=True):
-        if not api_key:
-            st.session_state.last_error='Add a YouTube Data API v3 key in Settings first.'
+    st.header("⚙️ Discovery settings")
+    api_key=st.text_input("YouTube API key",type="password",value=st.secrets.get("YOUTUBE_API_KEY",os.getenv("YOUTUBE_API_KEY","")) if hasattr(st,"secrets") else os.getenv("YOUTUBE_API_KEY",""))
+    region=st.selectbox("Region",["IN","US","GB","AE","AU","CA","SG","JP"],index=0)
+    lookback=st.slider("Lookback days",1,90,30)
+    per_query=st.slider("Videos per search",5,50,20)
+    max_queries=st.slider("Search queries",5,30,20)
+    if st.button("🚀 Run discovery",use_container_width=True):
+        if not api_key: st.session_state.last_error="Add your YouTube Data API v3 key first."
         else:
-            with st.spinner('Finding recent product content…'):
+            with st.spinner("Collecting individual video references…"):
                 try:
-                    st.session_state.live_df=youtube_discover(api_key,region,lookback,per_query,max_queries)
-                    st.session_state.last_error=''
-                except Exception as e:
-                    st.session_state.last_error=f'YouTube discovery failed: {type(e).__name__}: {e}'
-    st.divider()
-    st.caption('Demo mode works without an API key. Live discovery uses YouTube reference content only; it does not download videos.')
+                    st.session_state.live_df=youtube_discover(api_key,region,lookback,per_query,max_queries); st.session_state.last_error=""
+                except Exception as e: st.session_state.last_error=f"Discovery failed: {type(e).__name__}: {e}"
+
+st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Browse individual product-reference videos and compare products yourself. Product duplicates are not filtered.</p></div>',unsafe_allow_html=True)
 
 raw=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
-st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Discover products people are talking about before your next review.</p></div>',unsafe_allow_html=True)
 
-c1,c2,c3,c4=st.columns([2.4,1.15,1.15,1.15])
-with c1: search=st.text_input('Search',placeholder='Search products, gadgets, farming tools…',label_visibility='collapsed')
-with c2:
-    cats=['All']+sorted(set(raw.category.dropna().tolist())); cat=st.selectbox('Category',cats,label_visibility='collapsed')
-with c3: status=st.selectbox('Trend',['All','Viral/Trending','Rising','Other'],label_visibility='collapsed')
-with c4: sort=st.selectbox('Sort',['Opportunity','Newest trend','Trend','Uniqueness','Usefulness','Lowest saturation'],label_visibility='collapsed')
+c1,c2,c3,c4=st.columns([2.2,1.2,1.2,1.2])
+with c1: search=st.text_input("Search",placeholder="Search products…",label_visibility="collapsed")
+with c2: cat=st.selectbox("Category",["All"]+sorted(raw.category.dropna().unique().tolist()),label_visibility="collapsed")
+with c3: status=st.selectbox("Trend",["All","Viral/Trending","Rising","Other"],label_visibility="collapsed")
+with c4: sort=st.selectbox("Sort",["Opportunity","Newest","Trend","Views","Usefulness"],label_visibility="collapsed")
 
-st.markdown('<div class="section-title">Explore products</div>',unsafe_allow_html=True)
 if st.session_state.last_error: st.error(st.session_state.last_error)
 
 data=raw.copy()
 if search: data=data[data.name.astype(str).str.contains(search,case=False,na=False)]
-if cat!='All': data=data[data.category==cat]
-if status!='All': data=data[data.trend_status==status]
-sort_map={'Opportunity':'opportunity_score','Trend':'trend_score','Uniqueness':'uniqueness_score','Usefulness':'usefulness_score','Lowest saturation':'saturation_score'}
-if sort=='Newest trend' and 'published_at' in data.columns:
-    data['_published']=pd.to_datetime(data['published_at'],errors='coerce',utc=True); data=data.sort_values('_published',ascending=False)
-else: data=data.sort_values(sort_map.get(sort,'opportunity_score'),ascending=(sort=='Lowest saturation'))
+if cat!="All": data=data[data.category==cat]
+if status!="All": data=data[data.trend_status==status]
+if sort=="Newest": data["_date"]=pd.to_datetime(data.get("published_at"),errors="coerce",utc=True); data=data.sort_values("_date",ascending=False)
+elif sort=="Views": data=data.sort_values("views",ascending=False)
+elif sort=="Trend": data=data.sort_values("trend_score",ascending=False)
+elif sort=="Usefulness": data=data.sort_values("usefulness_score",ascending=False)
+else: data=data.sort_values("opportunity_score",ascending=False)
+
+data=data.head(MAX_CARDS).reset_index(drop=True)
+page=st.number_input("Page",min_value=1,max_value=TOTAL_PAGES,value=1,step=1)
+start=(page-1)*PAGE_SIZE; page_data=data.iloc[start:start+PAGE_SIZE]
 
 m1,m2,m3,m4=st.columns(4)
-m1.metric('Products found',len(data)); m2.metric('Viral / Trending',int((data.trend_status=='Viral/Trending').sum())); m3.metric('Rising',int((data.trend_status=='Rising').sum())); m4.metric('Avg opportunity',round(data.opportunity_score.mean()) if len(data) else 0)
+m1.metric("Video cards",len(data));m2.metric("Page",f"{page}/{TOTAL_PAGES}");m3.metric("Viral / Trending",int((data.trend_status=="Viral/Trending").sum()));m4.metric("Rising",int((data.trend_status=="Rising").sum()))
+st.caption(f"Showing cards {start+1 if len(page_data) else 0}–{start+len(page_data) if len(page_data) else 0} of {len(data)}. The system does not merge repeated products; separate videos remain separate cards.")
 
-if st.session_state.live_df.empty: st.info('✨ Demo mode — sample products are shown so you can check the interface. Add your YouTube API key in ⚙️ Settings for live discovery.')
-else: st.success(f'Live discovery found {len(st.session_state.live_df)} product candidates.')
-
-if len(data):
-    csv=data.to_csv(index=False).encode('utf-8'); st.download_button('⬇️ Export results',csv,'product_hunter_results.csv','text/csv')
-    cards=[]
-    for _,p in data.iterrows():
-        name=html.escape(str(p.get('name','Unknown product'))); catv=html.escape(str(p.get('category',''))); segment=html.escape(str(p.get('segment','')))
-        stat=str(p.get('trend_status','Other')); badge_class='hot' if stat=='Viral/Trending' else ('rising' if stat=='Rising' else 'other')
-        img=str(p.get('image_url','') or ''); img=img if img else 'https://placehold.co/800x500/f3f4f6/555?text=Product+Preview'; img=html.escape(img,quote=True)
-        product_url=html.escape(str(p.get('product_url','') or '#'),quote=True); ref_url=html.escape(str(p.get('reference_url','') or '#'),quote=True)
-        why=html.escape(str(p.get('why_interesting','') or 'Useful product candidate with review potential.'))
-        opp=int(p.get('opportunity_score',0)); trend=int(p.get('trend_score',0)); uniq=int(p.get('uniqueness_score',0)); use=int(p.get('usefulness_score',0)); sat=int(p.get('saturation_score',0))
-        season=html.escape(str(p.get('season','') or '')); season_badge=f'<span class="badge">🌦️ {season}</span>' if season else ''
-        card=f'''<div class="card"><img class="card-img" src="{img}" loading="lazy"><div class="card-body"><div class="badges"><span class="badge {badge_class}">{html.escape(stat)}</span><span class="badge">{catv}</span>{season_badge}</div><div class="card-title">{name}</div><div class="meta">{segment}</div><div class="why">{why}</div><div class="score-row"><div class="score">{opp}<small>OPPORTUNITY / 100</small></div><div class="metrics">Trend {trend} · Unique {uniq}<br>Useful {use} · Saturation {sat}</div></div><div class="links"><a class="primary" href="{product_url}" target="_blank">🛒 View product</a><a href="{ref_url}" target="_blank">▶ Reference</a></div></div></div>'''
-        cards.append(card)
-    for i in range(0,len(cards),3):
-        cols=st.columns(3,gap='medium')
-        for j,col in enumerate(cols):
-            if i+j<len(cards):
-                with col: st.markdown(cards[i+j],unsafe_allow_html=True)
+if len(page_data)==0:
+    st.info("No cards on this page yet. Run live discovery or change the filters.")
 else:
-    st.markdown('<div class="empty"><div style="font-size:2rem">🔎</div><h3>No products found</h3><p>Try another search, category or trend filter.</p></div>',unsafe_allow_html=True)
+    for i in range(0,len(page_data),3):
+        cols=st.columns(3,gap="medium")
+        for j,col in enumerate(cols):
+            if i+j>=len(page_data): continue
+            p=page_data.iloc[i+j]
+            with col:
+                with st.container(border=True):
+                    img=str(p.get("image_url","") or "")
+                    if img.startswith("asset:"): img=str(ASSET_DIR/img.split(":",1)[1])
+                    if not img or img=="nan": img=str(ASSET_DIR/"product-fallback.jpg")
+                    st.image(img,use_container_width=True)
+                    stat=str(p.get("trend_status","Other")); cls="hot" if stat=="Viral/Trending" else ("rise" if stat=="Rising" else "")
+                    badges=f'<span class="badge {cls}">{html.escape(stat)}</span><span class="badge">{html.escape(str(p.get("category","")))}</span>'
+                    if p.get("season"): badges+=f'<span class="badge">🌦️ {html.escape(str(p.get("season")))}</span>'
+                    st.markdown(badges,unsafe_allow_html=True)
+                    st.markdown(f'<div class="card-title">{html.escape(str(p.get("name","Unknown product")))}</div>',unsafe_allow_html=True)
+                    st.markdown(f'<div class="muted">{html.escape(str(p.get("channel",p.get("source",""))))} • {int(p.get("views",0)):,} views</div>',unsafe_allow_html=True)
+                    st.write(str(p.get("why_interesting","")))
+                    st.markdown(f'<div class="score">{int(p.get("opportunity_score",0))}<span class="muted"> / 100 opportunity</span></div>',unsafe_allow_html=True)
+                    st.caption(f"Trend {int(p.get('trend_score',0))} • Usefulness {int(p.get('usefulness_score',0))} • Uniqueness {int(p.get('uniqueness_score',0))}")
+                    b1,b2=st.columns(2)
+                    with b1: st.link_button("▶ YouTube",str(p.get("youtube_url","")),use_container_width=True)
+                    with b2: st.link_button("◎ Instagram",str(p.get("instagram_url","")),use_container_width=True)
+                    links=p.get("product_links",[]) or []
+                    with st.popover(f"🛒 Product links ({len(links)})",use_container_width=True):
+                        st.caption("All product URLs currently available for this card. Search links are only used when no direct URL was found.")
+                        for label,url in links:
+                            st.link_button(label,url,use_container_width=True)
 
-st.divider(); st.caption('Product Hunter is a research tool. Social references are used for discovery; videos are not downloaded or republished. Opportunity scores are analytical signals, not guarantees.')
+st.divider()
+st.caption("Pages are fixed at 100 cards each, up to 5 pages / 500 cards. Exact repeated products are intentionally retained as separate video cards; only duplicate copies of the same video ID are removed when a search result appears under multiple queries.")
