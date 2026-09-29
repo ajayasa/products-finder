@@ -2,6 +2,7 @@ import os, re, math, html
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 import json
 import pandas as pd
@@ -90,15 +91,6 @@ KEYWORDS = {
  "Unique & Clever":"clever innovative invention unusual unique smart",
 }
 
-DEMO = [
- {"name":"Foldable Food Sealer","category":"Home & Kitchen","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":86,"trend_score":72,"uniqueness_score":88,"usefulness_score":91,"demo_score":90,"saturation_score":38,"why_interesting":"Easy before/after demonstration and solves a common food-storage problem.","image_url":"asset:sealer.jpg","youtube_url":"https://www.youtube.com/results?search_query=mini+food+bag+sealer","instagram_url":"https://www.instagram.com/explore/tags/foodsealer/","product_links":[["Amazon India","https://www.amazon.in/s?k=mini+food+bag+sealer"],["Flipkart","https://www.flipkart.com/search?q=mini%20food%20bag%20sealer"],["Meesho","https://www.meesho.com/search?q=mini%20food%20bag%20sealer"]]},
- {"name":"Smart Soil Moisture Meter","category":"Farming & Agriculture","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":84,"trend_score":68,"uniqueness_score":84,"usefulness_score":92,"demo_score":86,"saturation_score":34,"why_interesting":"Useful for home gardening and farming; readings are easy to demonstrate on video.","image_url":"asset:soil.jpg","youtube_url":"https://www.youtube.com/results?search_query=soil+moisture+meter","instagram_url":"https://www.instagram.com/explore/tags/soilmoisture/","product_links":[["Amazon India","https://www.amazon.in/s?k=soil+moisture+meter"],["Flipkart","https://www.flipkart.com/search?q=soil%20moisture%20meter"],["Meesho","https://www.meesho.com/search?q=soil%20moisture%20meter"]]},
- {"name":"Portable Tyre Inflator","category":"Car & Bike","segment":"Viral / Trending Products","trend_status":"Viral/Trending","opportunity_score":79,"trend_score":91,"uniqueness_score":63,"usefulness_score":94,"demo_score":95,"saturation_score":71,"why_interesting":"Strong visual demonstration and clear emergency-use case.","image_url":"asset:inflator.jpg","youtube_url":"https://www.youtube.com/results?search_query=portable+tyre+inflator","instagram_url":"https://www.instagram.com/explore/tags/portabletyreinflator/","product_links":[["Amazon India","https://www.amazon.in/s?k=portable+tyre+inflator"],["Flipkart","https://www.flipkart.com/search?q=portable%20tyre%20inflator"],["Meesho","https://www.meesho.com/search?q=portable%20tyre%20inflator"]]},
- {"name":"Rechargeable Mini Chopper","category":"Home & Kitchen","segment":"Viral / Trending Products","trend_status":"Viral/Trending","opportunity_score":76,"trend_score":94,"uniqueness_score":61,"usefulness_score":89,"demo_score":96,"saturation_score":82,"why_interesting":"Highly demonstrable product, but social content is already crowded.","image_url":"asset:chopper.jpg","youtube_url":"https://www.youtube.com/results?search_query=rechargeable+mini+chopper","instagram_url":"https://www.instagram.com/explore/tags/minichopper/","product_links":[["Amazon India","https://www.amazon.in/s?k=rechargeable+mini+chopper"],["Flipkart","https://www.flipkart.com/search?q=rechargeable%20mini%20chopper"],["Meesho","https://www.meesho.com/search?q=rechargeable%20mini%20chopper"]]},
- {"name":"Hand Weeder Tool","category":"Farming & Agriculture","segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":73,"trend_score":48,"uniqueness_score":87,"usefulness_score":88,"demo_score":84,"saturation_score":22,"why_interesting":"Less saturated and particularly relevant for garden and small-farm users.","image_url":"asset:weeder.jpg","youtube_url":"https://www.youtube.com/results?search_query=hand+weeder+tool","instagram_url":"https://www.instagram.com/explore/tags/handweeder/","product_links":[["Amazon India","https://www.amazon.in/s?k=hand+weeder+tool"],["Flipkart","https://www.flipkart.com/search?q=hand%20weeder%20tool"],["Meesho","https://www.meesho.com/search?q=hand%20weeder%20tool"]]},
- {"name":"Travel Cable Organizer","category":"Travel","segment":"Other Unique & Useful","trend_status":"Rising","opportunity_score":81,"trend_score":70,"uniqueness_score":78,"usefulness_score":87,"demo_score":82,"saturation_score":42,"why_interesting":"Compact travel problem-solver with an easy visual transformation demo.","image_url":"asset:travel.jpg","youtube_url":"https://www.youtube.com/results?search_query=travel+cable+organizer","instagram_url":"https://www.instagram.com/explore/tags/travelcableorganizer/","product_links":[["Amazon India","https://www.amazon.in/s?k=travel+cable+organizer"],["Flipkart","https://www.flipkart.com/search?q=travel%20cable%20organizer"],["Meesho","https://www.meesho.com/search?q=travel%20cable%20organizer"]]},
-]
-
 
 def clean_text(x):
     return re.sub(r"\s+", " ", html.unescape(str(x or ""))).strip()
@@ -131,7 +123,8 @@ def marketplace_links(name):
     q=quote_plus(name)
     return [
         ["Amazon India",f"https://www.amazon.in/s?k={q}"],
-        ["Flipkart",f"https://www.flipkart.com/search?q={quote_plus(name)}"],
+        ["Amazon US",f"https://www.amazon.com/s?k={q}"],
+        ["Flipkart",f"https://www.flipkart.com/search?q={q}"],
         ["Meesho",f"https://www.meesho.com/search?q={q}"],
         ["eBay",f"https://www.ebay.com/sch/i.html?_nkw={q}"],
         ["AliExpress",f"https://www.aliexpress.com/w/wholesale-{q}.html"],
@@ -139,8 +132,12 @@ def marketplace_links(name):
         ["Etsy",f"https://www.etsy.com/search?q={q}"],
         ["Walmart",f"https://www.walmart.com/search?q={q}"],
         ["Target",f"https://www.target.com/s?searchTerm={q}"],
+        ["Best Buy",f"https://www.bestbuy.com/site/searchpage.jsp?st={q}"],
         ["Ubuy",f"https://www.ubuy.co.in/search/index/view?q={q}"],
         ["IndiaMART",f"https://dir.indiamart.com/search.mp?ss={q}"],
+        ["Temu",f"https://www.temu.com/search_result.html?search_key={q}"],
+        ["Shopee",f"https://shopee.com/search?keyword={q}"],
+        ["Lazada",f"https://www.lazada.com/catalog/?q={q}"],
     ]
 
 
@@ -176,12 +173,6 @@ def normalize_product_name(name):
     t=re.sub(r"\b(review|unboxing|amazon|flipkart|meesho|viral|best|top|new|cool|useful|gadget|gadgets|product|products)\b", " ", t)
     return re.sub(r"\s+", " ", t).strip()
 
-def dedupe_products(df):
-    if df.empty: return df
-    x=df.copy(); x["_product_key"]=x["name"].map(normalize_product_name)
-    x=x.sort_values(["opportunity_score","views"],ascending=False)
-    x=x.drop_duplicates("_product_key",keep="first").drop(columns=["_product_key"],errors="ignore")
-    return x.reset_index(drop=True)
 
 def youtube_search_unique(api_key, query, region="IN", per_query=50):
     if not query.strip(): return pd.DataFrame()
@@ -299,23 +290,42 @@ PRODUCT_SOURCE_DOMAINS = {
 }
 
 
-def _bing_search(query, count=10, offset=0):
-    """Best-effort public web discovery. No marketplace API is required."""
-    url="https://www.bing.com/search"
-    r=requests.get(url, params={"q":query, "count":min(count,50), "first":offset+1, "setlang":"en"},
-                   headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}, timeout=20)
-    r.raise_for_status()
-    html_text=r.text
-    blocks=re.findall(r'<li class="b_algo".*?</li>', html_text, flags=re.S|re.I)
+def _parse_search_html(html_text):
     rows=[]
-    for block in blocks:
+    for block in re.findall(r'<li class="b_algo".*?</li>', html_text, flags=re.S|re.I):
         m=re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, flags=re.S|re.I)
         if not m: continue
-        url=html.unescape(m.group(1)); title=re.sub(r'<.*?>',' ',m.group(2)); title=clean_text(title)
-        sm=re.search(r'<p[^>]*>(.*?)</p>', block, flags=re.S|re.I); snippet=clean_text(re.sub(r'<.*?>',' ',sm.group(1))) if sm else ""
-        if url.startswith("http"):
-            rows.append({"url":url,"title":title,"snippet":snippet})
+        url=html.unescape(m.group(1)); title=clean_text(re.sub(r'<.*?>',' ',m.group(2)))
+        sm=re.search(r'<p[^>]*>(.*?)</p>', block, flags=re.S|re.I)
+        snippet=clean_text(re.sub(r'<.*?>',' ',sm.group(1))) if sm else ""
+        if url.startswith("http"): rows.append({"url":url,"title":title,"snippet":snippet})
+    # DuckDuckGo HTML fallback
+    if not rows:
+        for block in re.findall(r'<div[^>]+class="result".*?</div>\s*</div>', html_text, flags=re.S|re.I):
+            m=re.search(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',block,re.S|re.I)
+            if not m: continue
+            url=html.unescape(m.group(1)); title=clean_text(re.sub(r'<.*?>',' ',m.group(2)))
+            if url.startswith('http'): rows.append({"url":url,"title":title,"snippet":""})
     return rows
+
+
+def _bing_search(query, count=10, offset=0):
+    """Best-effort public web discovery using HTML search pages; no marketplace API required."""
+    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}
+    errors=[]
+    engines=[
+        ("https://www.bing.com/search", {"q":query,"count":min(count,50),"first":offset+1,"setlang":"en"}),
+        ("https://html.duckduckgo.com/html/", {"q":query,"s":offset}),
+    ]
+    for url,params in engines:
+        try:
+            r=requests.get(url,params=params,headers=headers,timeout=12)
+            r.raise_for_status()
+            rows=_parse_search_html(r.text)
+            if rows: return rows[:count]
+        except Exception as e:
+            errors.append(type(e).__name__)
+    raise RuntimeError("; ".join(errors) if errors else "No public search results")
 
 
 def _product_page_metadata(url):
@@ -372,51 +382,162 @@ def _source_name(url):
 
 
 def global_product_discover(max_cards=500, queries_per_run=40, season="All Seasons"):
-    """Real public-web product discovery. Searches multiple source domains and extracts public product metadata.
-    Exact URLs are the only duplicates removed; separate product pages remain separate cards.
+    """Discover real public product pages across many worldwide sources.
+    Product duplicates are NOT merged. Only the exact same URL is removed.
+    Uses a small parallel public-web search pass so the main page can populate automatically.
     """
-    queries=[]
-    cats=list(QUERY_PACK.items())
-    for category,qs in cats:
-        for q in qs[:2]:
-            queries.append((category,q))
-    if season and season!="All Seasons":
-        season_terms=" ".join(SEASONAL_TERMS.get(season,[]))
-        queries=[(c,f"{q} {season_terms}") for c,q in queries]
-    queries=queries[:max(1,int(queries_per_run))]
-    source_domains=list(PRODUCT_SOURCE_DOMAINS.items())
-    rows=[]; seen_urls=set(); failures=[]
-    # Rotate through sources so the feed does not become Amazon-heavy.
-    for category,q in queries:
-        for source_name,domain in source_domains:
-            if len(rows)>=max_cards: break
+    # One broad query per category gives the feed coverage without requiring a marketplace API.
+    category_queries=[]
+    for category, qs in QUERY_PACK.items():
+        if qs:
+            q=qs[0]
+            if season and season != "All Seasons":
+                q += " " + " ".join(SEASONAL_TERMS.get(season, []))
+            category_queries.append((category,q))
+    category_queries=category_queries[:max(1,min(len(category_queries),int(queries_per_run)))]
+
+    # Additional source-targeted searches keep the feed from becoming Amazon-heavy.
+    source_queries=[]
+    source_targets=list(PRODUCT_SOURCE_DOMAINS.items())
+    for source_name, domain in source_targets:
+        source_queries.append((source_name, domain, "useful products gadgets tools"))
+
+    search_jobs=[]
+    for category,q in category_queries:
+        search_jobs.append((category, None, q))
+    # Add one targeted query per source, but keep the total search pass bounded.
+    search_jobs.extend(source_queries[:max(0, min(len(source_queries), 20))])
+
+    raw=[]
+    failures=[]
+    def run_job(job):
+        category, source_name, q = job
+        if source_name:
+            domain=PRODUCT_SOURCE_DOMAINS.get(source_name, "")
+            query=f"site:{domain} {q}"
+        else:
+            query=f"{q} buy product"
+        return job, _bing_search(query, count=8)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures=[pool.submit(run_job,j) for j in search_jobs]
+        for fut in as_completed(futures):
+            job=search_jobs[0]
             try:
-                results=_bing_search(f'site:{domain} {q} buy',count=5)
+                job, results=fut.result()
+                category, source_name, _=job
+                for result in results:
+                    raw.append((category, source_name, result))
             except Exception as e:
-                failures.append(source_name); continue
-            for result in results:
-                url=result.get("url","")
-                if not url.startswith("http"): continue
-                host=urlparse(url).netloc.lower()
-                if domain not in host or url in seen_urls: continue
-                seen_urls.add(url)
-                meta=_product_page_metadata(url)
+                failures.append(str(e))
+
+    # Exact URL duplicate only. Similar products remain separate cards.
+    candidates=[]; seen_urls=set()
+    for category, source_hint, result in raw:
+        url=result.get("url", "")
+        if not url.startswith("http") or url in seen_urls:
+            continue
+        host=urlparse(url).netloc.lower()
+        if any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()):
+            seen_urls.add(url)
+            candidates.append((category, source_hint, result))
+        elif source_hint is None:
+            # Public brand/manufacturer/product pages are allowed in the global feed.
+            if any(x in host for x in ["youtube.com","instagram.com","tiktok.com","pinterest.com","facebook.com","google.com","bing.com"]):
+                continue
+            seen_urls.add(url)
+            candidates.append((category, source_hint, result))
+        if len(candidates)>=max_cards*2:
+            break
+
+    def enrich(item):
+        category, source_hint, result=item
+        url=result.get("url","")
+        meta=_product_page_metadata(url)
+        name=clean_text(meta.get("title") or result.get("title") or "")
+        if len(name)<5:
+            return None
+        desc=clean_text(meta.get("description") or result.get("snippet") or "")
+        text=f"{name} {desc} {category}"
+        cat=classify(text)
+        detected_season=seasonal_tag(text)
+        low=text.lower()
+        usefulness=min(100,72 + (10 if any(k in low for k in ["useful","problem","solution","save time","save money"]) else 0))
+        demo=min(100,72 + (12 if any(k in low for k in ["before after","easy","portable","tool","how to","demonstration"]) else 0))
+        uniq=78
+        opp=round(min(100,usefulness*.35+demo*.25+uniq*.25+10))
+        source=_source_name(url) if not source_hint else (_source_name(url) if urlparse(url).netloc else source_hint)
+        links=[[f"{source} (direct)",url]] + marketplace_links(name)
+        # Keep link list unique while retaining every marketplace search destination.
+        seen=set(); clean_links=[]
+        for label,link in links:
+            if link not in seen:
+                seen.add(link); clean_links.append([label,link])
+        return {"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":opp,"trend_score":0,"uniqueness_score":uniq,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Public product page found on {source}."+(f" Brand: {meta['brand']}." if meta.get("brand") else ""),"image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":clean_links,"channel":source,"source":source,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":detected_season,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")}
+
+    rows=[]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures=[pool.submit(enrich,item) for item in candidates[:max_cards*2]]
+        for fut in as_completed(futures):
+            try:
+                row=fut.result()
+                if row: rows.append(row)
+                if len(rows)>=max_cards: break
+            except Exception:
+                continue
+    # Stable order for the UI; no name-based product deduplication.
+    return pd.DataFrame(rows[:max_cards]), sorted(set(failures))
+
+
+def public_product_search(query, max_cards=500, season="All Seasons"):
+    """Search the public web directly for a user-entered product/problem, independent of YouTube APIs."""
+    query=clean_text(query)
+    if not query: return pd.DataFrame()
+    queries=[query]
+    if season and season != "All Seasons": queries.append(query+" "+" ".join(SEASONAL_TERMS.get(season, [])))
+    jobs=[]
+    for q in queries:
+        jobs.append((None,q+" buy product"))
+        for source,domain in list(PRODUCT_SOURCE_DOMAINS.items())[:16]:
+            jobs.append((source,f"site:{domain} {q}"))
+    raw=[]; failures=[]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        future_map={pool.submit(_bing_search,q,count=8):(source,q) for source,q in jobs}
+        for fut,(source,q) in future_map.items():
+            try:
+                for result in fut.result(): raw.append((source,result))
+            except Exception as e: failures.append(type(e).__name__)
+    seen=set(); candidates=[]
+    for source_hint,result in raw:
+        url=result.get("url","")
+        if not url.startswith("http") or url in seen: continue
+        host=urlparse(url).netloc.lower()
+        if any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()) or source_hint is None:
+            if any(x in host for x in ["youtube.com","instagram.com","tiktok.com","pinterest.com","facebook.com","google.com","bing.com","duckduckgo.com"]): continue
+            seen.add(url); candidates.append((source_hint,result))
+        if len(candidates)>=max_cards*2: break
+    rows=[]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        future_map={pool.submit(_product_page_metadata,item[1].get("url","")):item for item in candidates[:max_cards*2]}
+        for fut,item in future_map.items():
+            try:
+                meta=fut.result(); result=item[1]
                 name=clean_text(meta.get("title") or result.get("title") or "")
-                # Skip category/search/listing pages when they do not expose product metadata.
                 if len(name)<5: continue
                 desc=clean_text(meta.get("description") or result.get("snippet") or "")
-                text=f"{name} {desc} {category} {q}"
-                cat=classify(text); detected_season=seasonal_tag(text)
-                score_text=text.lower()
-                usefulness=72 + (10 if any(k in score_text for k in ["useful","problem","solution","save time","save money"]) else 0)
-                demo=72 + (12 if any(k in score_text for k in ["before after","easy","portable","tool","how to","demonstration"]) else 0)
-                uniq=78
-                opp=round(max(0,min(100,usefulness*.35+demo*.25+uniq*.25+10)))
-                links=[[f"{source_name} (direct)",url]]
-                rows.append({"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":opp,"trend_score":0,"uniqueness_score":uniq,"usefulness_score":min(usefulness,100),"demo_score":min(demo,100),"saturation_score":0,"why_interesting":f"Public product page found on {source_name}."+(f" Brand: {meta['brand']}." if meta.get("brand") else ""),"image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":links,"channel":source_name,"source":source_name,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":detected_season,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")})
-                if len(rows)>=max_cards: break
-        if len(rows)>=max_cards: break
-    return pd.DataFrame(rows), sorted(set(failures))
+                text=f"{name} {desc} {query}"
+                cat=classify(text); detected=seasonal_tag(text)
+                low=text.lower(); usefulness=min(100,72+(10 if any(k in low for k in ["useful","problem","solution","save time","save money"]) else 0)); demo=min(100,72+(12 if any(k in low for k in ["before after","easy","portable","tool","how to","demonstration"]) else 0)); uniq=78
+                opp=round(min(100,usefulness*.35+demo*.25+uniq*.25+10))
+                source=_source_name(result.get("url",""))
+                links=[[f"{source} (direct)",result.get("url","")]]+marketplace_links(name)
+                unique_links=[]; seen_links=set()
+                for label,link in links:
+                    if link and link not in seen_links: seen_links.add(link); unique_links.append([label,link])
+                rows.append({"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":opp,"trend_score":0,"uniqueness_score":uniq,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Public product page found on {source}.","image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":unique_links,"channel":source,"source":source,"source_url":result.get("url",""),"views":0,"likes":0,"comments":0,"published_at":"","season":detected,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")})
+            except Exception: continue
+            if len(rows)>=max_cards: break
+    return pd.DataFrame(rows[:max_cards])
 
 st.session_state.setdefault("live_df", pd.DataFrame())
 st.session_state.setdefault("global_products_df", pd.DataFrame())
@@ -430,6 +551,8 @@ st.session_state.setdefault("youtube_trends_df", pd.DataFrame())
 st.session_state.setdefault("instagram_trends_df", pd.DataFrame())
 st.session_state.setdefault("trending_stars_df", pd.DataFrame())
 st.session_state.setdefault("season_filter", "All Seasons")
+st.session_state.setdefault("auto_loaded", False)
+st.session_state.setdefault("discovery_running", False)
 
 st.markdown("""<style>
 .block-container{max-width:1450px;padding:1rem 2rem 3rem}.hero{padding:24px;border:1px solid #e6e6e6;border-radius:22px;background:linear-gradient(135deg,#f7f9ff,#fff);margin-bottom:18px}.hero h1{margin:0;font-size:2.1rem;font-weight:850}.hero p{margin:5px 0 0;color:#666}.card{border:1px solid #e4e4e4;border-radius:18px;overflow:hidden;background:#fff;box-shadow:0 2px 12px rgba(0,0,0,.05);height:100%}.card-title{font-size:1.05rem;font-weight:800;line-height:1.3;margin:10px 0 6px}.badge{display:inline-block;font-size:11px;font-weight:750;padding:5px 8px;border-radius:999px;background:#f1f3f5;margin:0 5px 5px 0}.hot{background:#fff0ed;color:#c0392b}.rise{background:#fff7dc;color:#9a6900}.why{font-size:13px;color:#555;line-height:1.45;min-height:48px}.score{font-size:1.35rem;font-weight:850}.muted{color:#777;font-size:12px}.buttonrow{display:flex;gap:8px;margin-top:12px}.pagebar{padding:12px 14px;border:1px solid #e7e7e7;border-radius:14px;background:#fff;margin:12px 0}.small{font-size:12px;color:#777}.trend-star-note{font-size:12px;color:#666;margin:6px 0 14px}@media(max-width:700px){.block-container{padding:.7rem}.hero h1{font-size:1.65rem}.buttonrow{display:block}.buttonrow>*{margin-bottom:6px;width:100%}}
@@ -442,7 +565,7 @@ with st.sidebar:
     lookback=st.slider("Lookback days",1,90,30)
     per_query=st.slider("Videos per search",5,50,20)
     max_queries=st.slider("Search queries",5,30,20)
-    if st.button("🌍 Discover Global Products",use_container_width=True):
+    if st.button("🌍 Refresh Global Products",use_container_width=True):
         with st.spinner("Discovering product pages across the public web…"):
             try:
                 found, failed_sources=global_product_discover(MAX_CARDS, max_queries, st.session_state.get("season_filter","All Seasons"))
@@ -452,6 +575,22 @@ with st.sidebar:
             except Exception as e:
                 st.session_state.last_error=f"Global discovery failed: {type(e).__name__}: {e}"
     st.caption("Main feed uses public-web product discovery. YouTube API is optional enrichment, not a requirement for the main catalog.")
+
+# Automatically populate the main page on first load. No demo catalog is used as the default feed.
+if not st.session_state.auto_loaded and st.session_state.global_products_df.empty:
+    st.session_state.auto_loaded = True
+    with st.spinner("Loading global products from public product sources…"):
+        try:
+            found, failed_sources = global_product_discover(MAX_CARDS, 19, st.session_state.get("season_filter", "All Seasons"))
+            st.session_state.global_products_df = found
+            st.session_state.live_df = found.copy()
+            st.session_state.page = 1
+            if found.empty:
+                st.session_state.last_error = "No live public product pages were retrieved. Use Refresh Global Products to try again."
+            else:
+                st.session_state.last_error = ""
+        except Exception as e:
+            st.session_state.last_error = f"Automatic global discovery failed: {type(e).__name__}: {e}"
 
 st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Global product discovery across categories and public product sources. Trend signals are connected separately through Trending Stars. Product duplicates are not merged.</p></div>',unsafe_allow_html=True)
 
@@ -472,30 +611,20 @@ if trending_stars:
     st.session_state.view="trending_stars"; st.session_state.page=1
     # The button is a unified trend hub. API-backed sources are optional; public trend links remain usable without API keys.
     source=st.session_state.get("youtube_trends_df",pd.DataFrame())
-    if source.empty: source=st.session_state.get("live_df",pd.DataFrame())
     st.session_state.trending_stars_df=source.copy()
     st.session_state.last_error=""
 
 if do_search:
     if not search_term.strip():
         st.warning("Enter a product or problem to search.")
-    elif not api_key:
-        with st.spinner(f"Searching public product pages for: {search_term.strip()} …"):
+    else:
+        # Product search is always source-agnostic. YouTube API data belongs to Trending Stars, not the main product feed.
+        with st.spinner(f"Searching public product sources for: {search_term.strip()} …"):
             try:
-                found, _failed=global_product_discover(MAX_CARDS, 12, st.session_state.get("season_filter","All Seasons"))
-                st.session_state.search_df=found
-                if not st.session_state.search_df.empty:
-                    st.session_state.search_df=st.session_state.search_df[st.session_state.search_df["name"].str.contains(search_term.strip(),case=False,na=False) | st.session_state.search_df["why_interesting"].str.contains(search_term.strip(),case=False,na=False)]
+                st.session_state.search_df=public_product_search(search_term.strip(), MAX_CARDS, st.session_state.get("season_filter","All Seasons"))
                 st.session_state.search_term=search_term.strip(); st.session_state.page=1; st.session_state.last_error=""
             except Exception as e:
-                st.session_state.last_error=f"Public-web search failed: {type(e).__name__}: {e}"
-    else:
-        with st.spinner(f"Searching all matching videos for: {search_term.strip()} …"):
-            try:
-                st.session_state.search_df=youtube_search_unique(api_key,search_term,region,100)
-                st.session_state.search_term=search_term.strip(); st.session_state.last_error=""; st.session_state.page=1
-            except Exception as e:
-                st.session_state.last_error=f"Search failed: {type(e).__name__}: {e}"
+                st.session_state.last_error=f"Public-web product search failed: {type(e).__name__}: {e}"
 
 if show_fav:
     st.session_state.page=1
@@ -538,11 +667,6 @@ if not data.empty:
     else: data=data.sort_values("opportunity_score",ascending=False)
     data=data.head(MAX_CARDS).reset_index(drop=True)
 
-# Simple page navigation: five separate page buttons, no page/card metrics.
-pcols=st.columns(5)
-for n,pc in enumerate(pcols,1):
-    with pc:
-        if st.button(str(n),key=f"page_{n}",use_container_width=True): st.session_state.page=n
 page=st.session_state.page
 start=(page-1)*PAGE_SIZE; page_data=data.iloc[start:start+PAGE_SIZE] if not data.empty else data
 
@@ -558,8 +682,10 @@ else:
                 with st.container(border=True):
                     img=str(p.get("image_url","") or "")
                     if img.startswith("asset:"): img=str(ASSET_DIR/img.split(":",1)[1])
-                    if not img or img=="nan": img=str(ASSET_DIR/"product-fallback.jpg")
-                    st.image(img,use_container_width=True)
+                    if not img or img=="nan":
+                        st.markdown('<div style="height:210px;border-radius:14px;background:#f3f5f8;display:flex;align-items:center;justify-content:center;color:#7a7f87;font-size:14px;">Product image not available</div>', unsafe_allow_html=True)
+                    else:
+                        st.image(img,use_container_width=True)
                     stat=str(p.get("trend_status","Other")); cls="hot" if stat=="Viral/Trending" else ("rise" if stat=="Rising" else "")
                     badges=f'<span class="badge {cls}">{html.escape(stat)}</span><span class="badge">{html.escape(str(p.get("category","")))}</span>'
                     if p.get("season"): badges+=f'<span class="badge">🌦️ {html.escape(str(p.get("season")))}</span>'
