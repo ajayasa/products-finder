@@ -224,6 +224,54 @@ def youtube_discover(api_key, region="IN", lookback=30, per_query=20, max_querie
     return pd.DataFrame(rows)
 
 
+def youtube_trends(api_key, region="IN", per_query=50):
+    """Fetch a broad collection of current product/gadget trend videos. Exact duplicate videos are removed; product duplicates are retained."""
+    if not api_key:
+        return pd.DataFrame()
+    trend_queries=[
+        "trending products", "viral products", "trending gadgets", "viral gadgets",
+        "must have products", "new useful products", "new gadgets", "viral kitchen gadgets",
+        "viral home products", "viral car gadgets", "viral travel gadgets",
+        "viral farming tools", "viral useful products"
+    ]
+    cutoff=(datetime.now(timezone.utc)-timedelta(days=30)).isoformat().replace("+00:00","Z")
+    sess=requests.Session(); raw=[]
+    for q in trend_queries:
+        params={"part":"snippet","q":q,"type":"video","order":"viewCount","publishedAfter":cutoff,"maxResults":min(int(per_query),50),"regionCode":region,"relevanceLanguage":"en","key":api_key}
+        r=sess.get("https://www.googleapis.com/youtube/v3/search",params=params,timeout=20); r.raise_for_status()
+        for item in r.json().get("items",[]):
+            vid=item.get("id",{}).get("videoId")
+            if not vid: continue
+            sn=item.get("snippet",{})
+            raw.append({"video_id":vid,"title":sn.get("title",""),"description":sn.get("description","") or "","channel":sn.get("channelTitle",""),"published_at":sn.get("publishedAt",""),"thumbnail":sn.get("thumbnails",{}).get("high",{}).get("url") or sn.get("thumbnails",{}).get("medium",{}).get("url")})
+    unique={x["video_id"]:x for x in raw}
+    vids=list(unique.values()); rows=[]
+    for i in range(0,len(vids),50):
+        ids=",".join(x["video_id"] for x in vids[i:i+50])
+        r=sess.get("https://www.googleapis.com/youtube/v3/videos",params={"part":"snippet,statistics","id":ids,"key":api_key},timeout=20); r.raise_for_status()
+        for item in r.json().get("items",[]):
+            base=unique.get(item.get("id"),{}); stt=item.get("statistics",{}); pub=base.get("published_at","")
+            try: age=(datetime.now(timezone.utc)-datetime.fromisoformat(pub.replace("Z","+00:00"))).total_seconds()/86400
+            except: age=1
+            x={**base,"views":int(stt.get("viewCount",0) or 0),"likes":int(stt.get("likeCount",0) or 0),"comments":int(stt.get("commentCount",0) or 0),"age_days":max(age,.25)}
+            name=candidate_name(x["title"]); trend,uniq_score,use,demo,sat,opp,status=score_video(x)
+            external=extract_urls(x.get("description","")); links=[[urlparse(u).netloc.replace("www.","").split(".")[0].title(),u] for u in external] or marketplace_links(name)
+            rows.append({"name":name,"category":classify(name+" "+x.get("title","")+" "+x.get("description","")),"segment":"Viral / Trending Products" if status=="Viral/Trending" else "Other Unique & Useful","trend_status":status,"opportunity_score":opp,"trend_score":trend,"uniqueness_score":uniq_score,"usefulness_score":use,"demo_score":demo,"saturation_score":sat,"why_interesting":f"Trending reference by {x.get('channel','creator')}; {x.get('views',0):,} views.","image_url":x.get("thumbnail","") or "","youtube_url":f"https://www.youtube.com/watch?v={item.get('id')}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":links,"channel":x.get("channel",""),"views":x.get("views",0),"likes":x.get("likes",0),"comments":x.get("comments",0),"published_at":x.get("published_at",""),"season":seasonal_tag(name+" "+x.get("title",""))})
+    return pd.DataFrame(rows).sort_values(["trend_score","views"],ascending=False).head(500).reset_index(drop=True) if rows else pd.DataFrame()
+
+def instagram_trend_references(source_df):
+    """Build public Instagram reference links from discovered product/trend titles without requesting Instagram credentials."""
+    if source_df is None or source_df.empty: return pd.DataFrame()
+    rows=[]; seen=set()
+    for _,p in source_df.iterrows():
+        name=clean_text(p.get("name","")); key=normalize_product_name(name)
+        if not key or key in seen: continue
+        seen.add(key)
+        tag=re.sub(r"[^a-z0-9]+","",name.lower())[:60]
+        rows.append({"name":name,"category":p.get("category","Unique & Clever"),"trend_status":p.get("trend_status","Rising"),"opportunity_score":p.get("opportunity_score",0),"trend_score":p.get("trend_score",0),"uniqueness_score":p.get("uniqueness_score",0),"usefulness_score":p.get("usefulness_score",0),"demo_score":p.get("demo_score",0),"saturation_score":p.get("saturation_score",0),"why_interesting":"Public Instagram reference search; no Instagram login or password is required.","image_url":p.get("image_url","") or "","youtube_url":p.get("youtube_url",f"https://www.youtube.com/results?search_query={quote_plus(name)}"),"instagram_url":f"https://www.instagram.com/explore/tags/{tag}/","product_links":p.get("product_links",[]) or marketplace_links(name),"channel":"Instagram public reference","views":p.get("views",0),"likes":p.get("likes",0),"comments":p.get("comments",0),"published_at":p.get("published_at","")})
+    return pd.DataFrame(rows).head(500).reset_index(drop=True)
+
+
 if "live_df" not in st.session_state: st.session_state.live_df=pd.DataFrame()
 if "search_df" not in st.session_state: st.session_state.search_df=pd.DataFrame()
 if "search_term" not in st.session_state: st.session_state.search_term=""
@@ -251,6 +299,32 @@ with st.sidebar:
                 except Exception as e: st.session_state.last_error=f"Discovery failed: {type(e).__name__}: {e}"
 
 st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Browse individual product-reference videos and compare products yourself. Product duplicates are not filtered.</p></div>',unsafe_allow_html=True)
+
+trend_a, trend_b, spacer = st.columns([1.2,1.2,5.6])
+with trend_a:
+    if st.button("▶ YouTube Trends", use_container_width=True):
+        st.session_state.view="youtube_trends"; st.session_state.page=1
+        if not api_key:
+            st.session_state.last_error="Add your YouTube API key in Settings to fetch live YouTube trends."
+        else:
+            with st.spinner("Fetching current product trend videos…"):
+                try:
+                    st.session_state.youtube_trends_df=youtube_trends(api_key,region,50); st.session_state.last_error=""
+                except Exception as e: st.session_state.last_error=f"YouTube Trends failed: {type(e).__name__}: {e}"
+with trend_b:
+    if st.button("◎ Instagram Trends", use_container_width=True):
+        st.session_state.view="instagram_trends"; st.session_state.page=1
+        # Instagram does not provide unrestricted global trending-Reels access without permitted API access.
+        # Build public, credential-free references from the current trend/product candidates.
+        source=st.session_state.youtube_trends_df if not st.session_state.youtube_trends_df.empty else (st.session_state.live_df if not st.session_state.live_df.empty else pd.DataFrame(DEMO))
+        st.session_state.instagram_trends_df=instagram_trend_references(source); st.session_state.last_error=""
+
+if st.session_state.view=="youtube_trends":
+    st.markdown("### ▶ YouTube Trends")
+    st.caption("Individual trend videos are shown. Same-product videos are not merged. Exact duplicate video IDs are removed.")
+elif st.session_state.view=="instagram_trends":
+    st.markdown("### ◎ Instagram Trends")
+    st.caption("Public Instagram references are provided without requesting your Instagram username or password. Instagram does not provide unrestricted global trending-Reels access through the standard public API.")
 
 raw=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
 
@@ -283,7 +357,11 @@ if show_fav:
 
 if st.session_state.last_error: st.warning(st.session_state.last_error)
 
-if show_fav:
+if st.session_state.view=="youtube_trends":
+    data=st.session_state.youtube_trends_df.copy() if not st.session_state.youtube_trends_df.empty else pd.DataFrame()
+elif st.session_state.view=="instagram_trends":
+    data=st.session_state.instagram_trends_df.copy() if not st.session_state.instagram_trends_df.empty else pd.DataFrame()
+elif show_fav:
     data=pd.DataFrame(st.session_state.favorites) if st.session_state.favorites else pd.DataFrame()
 elif not st.session_state.search_df.empty:
     data=st.session_state.search_df.copy()
@@ -357,5 +435,13 @@ else:
                         for label,url in links:
                             st.link_button(label,url,use_container_width=True)
 
+# Small page numbers below the cards as requested.
+st.markdown('<div class="bottom-pages">',unsafe_allow_html=True)
+bcols=st.columns(5)
+for n,bc in enumerate(bcols,1):
+    with bc:
+        if st.button(str(n),key=f"bottom_page_{n}",use_container_width=True): st.session_state.page=n; st.rerun()
+st.markdown('</div>',unsafe_allow_html=True)
+
 st.divider()
-st.caption("Pages 1–5 contain up to 100 cards each. Normal discovery keeps individual videos; an explicit Search returns unique products so repeated products are not shown in search results. Favorites are saved for the current session.")
+st.caption("Pages 1–5 contain up to 100 cards each. Normal discovery keeps individual videos; Search returns unique products. Trend pages keep individual videos/references.")
