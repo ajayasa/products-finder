@@ -51,7 +51,7 @@ for _,p in filtered.iterrows():
     with st.container(border=True):
         left,right=st.columns([3,1])
         with left:
-            st.subheader(p.name)
+            st.subheader(p["name"])
             st.write(f"**{p.category}** • {p.segment} • **{p.trend_status}**")
             st.write(p.why_interesting)
             st.markdown(f"**Opportunity:** {p.opportunity_score}/100  |  **Uniqueness:** {p.uniqueness_score}/100  |  **Usefulness:** {p.usefulness_score}/100  |  **Saturation:** {p.saturation_score}/100")
