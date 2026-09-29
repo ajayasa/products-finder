@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse
 from pathlib import Path
 import requests
+import json
 import pandas as pd
 import streamlit as st
 
@@ -134,6 +135,12 @@ def marketplace_links(name):
         ["Meesho",f"https://www.meesho.com/search?q={q}"],
         ["eBay",f"https://www.ebay.com/sch/i.html?_nkw={q}"],
         ["AliExpress",f"https://www.aliexpress.com/w/wholesale-{q}.html"],
+        ["Alibaba",f"https://www.alibaba.com/trade/search?SearchText={q}"],
+        ["Etsy",f"https://www.etsy.com/search?q={q}"],
+        ["Walmart",f"https://www.walmart.com/search?q={q}"],
+        ["Target",f"https://www.target.com/s?searchTerm={q}"],
+        ["Ubuy",f"https://www.ubuy.co.in/search/index/view?q={q}"],
+        ["IndiaMART",f"https://dir.indiamart.com/search.mp?ss={q}"],
     ]
 
 
@@ -312,17 +319,47 @@ def _bing_search(query, count=10, offset=0):
 
 
 def _product_page_metadata(url):
-    """Read only public page metadata; failures are ignored so one site cannot stop discovery."""
+    """Extract public OpenGraph/JSON-LD product data. No login/API is required."""
     try:
-        r=requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=12, allow_redirects=True)
+        r=requests.get(url,headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"},timeout=12,allow_redirects=True)
         if r.status_code >= 400: return {}
-        txt=r.text[:1000000]
+        txt=r.text[:1500000]
         def meta(prop):
-            m=re.search(r'<meta[^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\'][^>]+content=["\']([^"\']+)',txt,re.I)
-            if not m:
-                m=re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\']',txt,re.I)
-            return html.unescape(m.group(1)).strip() if m else ""
-        return {"title":meta("og:title") or meta("twitter:title"),"image":meta("og:image") or meta("twitter:image"),"description":meta("og:description")}
+            patterns=[r'<meta[^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\'][^>]+content=["\']([^"\']+)',r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\']']
+            for pat in patterns:
+                m=re.search(pat,txt,re.I)
+                if m:return html.unescape(m.group(1)).strip()
+            return ""
+        title=meta("og:title") or meta("twitter:title")
+        image=meta("og:image") or meta("twitter:image")
+        desc=meta("og:description") or meta("description")
+        price=""; currency=""; availability=""; brand=""
+        for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',txt,re.I|re.S):
+            try:
+                data=json.loads(html.unescape(block.strip()))
+            except Exception:
+                continue
+            objs=data if isinstance(data,list) else (data.get("@graph",[]) if isinstance(data,dict) and "@graph" in data else [data])
+            for obj in objs:
+                if not isinstance(obj,dict): continue
+                typ=obj.get("@type","")
+                types=typ if isinstance(typ,list) else [typ]
+                if "Product" not in types and "ProductGroup" not in types: continue
+                title=title or str(obj.get("name", ""))
+                imgs=obj.get("image",[])
+                if isinstance(imgs,str): imgs=[imgs]
+                image=image or (imgs[0] if imgs else "")
+                desc=desc or str(obj.get("description", ""))
+                b=obj.get("brand")
+                brand=(b.get("name") if isinstance(b,dict) else str(b or "")) or brand
+                offer=obj.get("offers",{})
+                if isinstance(offer,list): offer=offer[0] if offer else {}
+                if isinstance(offer,dict):
+                    price=price or str(offer.get("price",offer.get("lowPrice","")))
+                    currency=currency or str(offer.get("priceCurrency",""))
+                    availability=availability or str(offer.get("availability",""))
+                break
+        return {"title":clean_text(title),"image":image,"description":clean_text(desc),"price":price,"currency":currency,"availability":availability,"brand":clean_text(brand)}
     except Exception:
         return {}
 
@@ -334,38 +371,52 @@ def _source_name(url):
     return host.split(".")[0].title() if host else "Public Web"
 
 
-def global_product_discover(max_cards=500, queries_per_run=20):
-    """Discover product pages from public web search across many categories and sources.
-    Exact URL duplicates are removed; products with similar names are intentionally retained.
+def global_product_discover(max_cards=500, queries_per_run=40, season="All Seasons"):
+    """Real public-web product discovery. Searches multiple source domains and extracts public product metadata.
+    Exact URLs are the only duplicates removed; separate product pages remain separate cards.
     """
     queries=[]
-    for category, qs in QUERY_PACK.items():
-        for q in qs[:2]: queries.append((category,q))
-    queries=queries[:queries_per_run]
-    rows=[]; seen_urls=set()
+    cats=list(QUERY_PACK.items())
+    for category,qs in cats:
+        for q in qs[:2]:
+            queries.append((category,q))
+    if season and season!="All Seasons":
+        season_terms=" ".join(SEASONAL_TERMS.get(season,[]))
+        queries=[(c,f"{q} {season_terms}") for c,q in queries]
+    queries=queries[:max(1,int(queries_per_run))]
+    source_domains=list(PRODUCT_SOURCE_DOMAINS.items())
+    rows=[]; seen_urls=set(); failures=[]
+    # Rotate through sources so the feed does not become Amazon-heavy.
     for category,q in queries:
-        try: results=_bing_search(f"{q} buy product",count=10)
-        except Exception: continue
-        for result in results:
-            url=result["url"]
-            host=urlparse(url).netloc.lower()
-            if any(x in host for x in ["bing.com","microsoft.com","youtube.com","instagram.com","tiktok.com","pinterest.com"]): continue
-            if url in seen_urls: continue
-            seen_urls.add(url)
-            meta=_product_page_metadata(url)
-            name=clean_text(meta.get("title") or result.get("title") or "Product")
-            if len(name)<4: continue
-            desc=clean_text(meta.get("description") or result.get("snippet") or "")
-            text=f"{name} {desc} {category}"
-            cat=classify(text)
-            season=seasonal_tag(text)
-            source=_source_name(url)
-            # Direct source link plus clearly-labelled marketplace search links. We never claim generated searches are direct listings.
-            links=[[f"{source} (direct)",url]]
-            links += [[f"{n} (search)",u] for n,u in marketplace_links(name)]
-            rows.append({"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":0,"trend_score":0,"uniqueness_score":0,"usefulness_score":0,"demo_score":0,"saturation_score":0,"why_interesting":f"Found from {source} through public web product discovery.","image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":links,"channel":source,"source":source,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":season})
-            if len(rows)>=max_cards: return pd.DataFrame(rows)
-    return pd.DataFrame(rows)
+        for source_name,domain in source_domains:
+            if len(rows)>=max_cards: break
+            try:
+                results=_bing_search(f'site:{domain} {q} buy',count=5)
+            except Exception as e:
+                failures.append(source_name); continue
+            for result in results:
+                url=result.get("url","")
+                if not url.startswith("http"): continue
+                host=urlparse(url).netloc.lower()
+                if domain not in host or url in seen_urls: continue
+                seen_urls.add(url)
+                meta=_product_page_metadata(url)
+                name=clean_text(meta.get("title") or result.get("title") or "")
+                # Skip category/search/listing pages when they do not expose product metadata.
+                if len(name)<5: continue
+                desc=clean_text(meta.get("description") or result.get("snippet") or "")
+                text=f"{name} {desc} {category} {q}"
+                cat=classify(text); detected_season=seasonal_tag(text)
+                score_text=text.lower()
+                usefulness=72 + (10 if any(k in score_text for k in ["useful","problem","solution","save time","save money"]) else 0)
+                demo=72 + (12 if any(k in score_text for k in ["before after","easy","portable","tool","how to","demonstration"]) else 0)
+                uniq=78
+                opp=round(max(0,min(100,usefulness*.35+demo*.25+uniq*.25+10)))
+                links=[[f"{source_name} (direct)",url]]
+                rows.append({"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":opp,"trend_score":0,"uniqueness_score":uniq,"usefulness_score":min(usefulness,100),"demo_score":min(demo,100),"saturation_score":0,"why_interesting":f"Public product page found on {source_name}."+(f" Brand: {meta['brand']}." if meta.get("brand") else ""),"image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":links,"channel":source_name,"source":source_name,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":detected_season,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")})
+                if len(rows)>=max_cards: break
+        if len(rows)>=max_cards: break
+    return pd.DataFrame(rows), sorted(set(failures))
 
 st.session_state.setdefault("live_df", pd.DataFrame())
 st.session_state.setdefault("global_products_df", pd.DataFrame())
@@ -394,16 +445,17 @@ with st.sidebar:
     if st.button("🌍 Discover Global Products",use_container_width=True):
         with st.spinner("Discovering product pages across the public web…"):
             try:
-                st.session_state.global_products_df=global_product_discover(MAX_CARDS, max_queries)
-                st.session_state.live_df=st.session_state.global_products_df.copy()
-                st.session_state.view="all"; st.session_state.page=1; st.session_state.last_error=""
+                found, failed_sources=global_product_discover(MAX_CARDS, max_queries, st.session_state.get("season_filter","All Seasons"))
+                st.session_state.global_products_df=found
+                st.session_state.live_df=found.copy()
+                st.session_state.view="all"; st.session_state.page=1; st.session_state.last_error=(f"No public product results were returned. Sources unavailable: {", ".join(failed_sources)}" if found.empty and failed_sources else "")
             except Exception as e:
                 st.session_state.last_error=f"Global discovery failed: {type(e).__name__}: {e}"
     st.caption("Main feed uses public-web product discovery. YouTube API is optional enrichment, not a requirement for the main catalog.")
 
 st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Global product discovery across categories and public product sources. Trend signals are connected separately through Trending Stars. Product duplicates are not merged.</p></div>',unsafe_allow_html=True)
 
-raw=st.session_state.global_products_df.copy() if not st.session_state.global_products_df.empty else (st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO))
+raw=st.session_state.global_products_df.copy() if not st.session_state.global_products_df.empty else st.session_state.live_df.copy()
 
 # Search and trend controls stay together in one row for quick product discovery.
 search_col, search_btn_col, stars_col, fav_col = st.columns([4.9,1.0,1.8,1.25])
@@ -421,7 +473,6 @@ if trending_stars:
     # The button is a unified trend hub. API-backed sources are optional; public trend links remain usable without API keys.
     source=st.session_state.get("youtube_trends_df",pd.DataFrame())
     if source.empty: source=st.session_state.get("live_df",pd.DataFrame())
-    if source.empty: source=pd.DataFrame(DEMO)
     st.session_state.trending_stars_df=source.copy()
     st.session_state.last_error=""
 
@@ -431,7 +482,8 @@ if do_search:
     elif not api_key:
         with st.spinner(f"Searching public product pages for: {search_term.strip()} …"):
             try:
-                st.session_state.search_df=global_product_discover(MAX_CARDS, 6)
+                found, _failed=global_product_discover(MAX_CARDS, 12, st.session_state.get("season_filter","All Seasons"))
+                st.session_state.search_df=found
                 if not st.session_state.search_df.empty:
                     st.session_state.search_df=st.session_state.search_df[st.session_state.search_df["name"].str.contains(search_term.strip(),case=False,na=False) | st.session_state.search_df["why_interesting"].str.contains(search_term.strip(),case=False,na=False)]
                 st.session_state.search_term=search_term.strip(); st.session_state.page=1; st.session_state.last_error=""
@@ -513,6 +565,8 @@ else:
                     if p.get("season"): badges+=f'<span class="badge">🌦️ {html.escape(str(p.get("season")))}</span>'
                     st.markdown(badges,unsafe_allow_html=True)
                     st.markdown(f'<div class="card-title">{html.escape(str(p.get("name","Unknown product")))}</div>',unsafe_allow_html=True)
+                    if str(p.get("price", "")) not in ("", "nan"):
+                        st.markdown(f"**Price:** {html.escape(str(p.get("currency","")))} {html.escape(str(p.get("price","")))}")
                     st.markdown(f'<div class="muted">{html.escape(str(p.get("channel",p.get("source",""))))} • {int(p.get("views",0)):,} views</div>',unsafe_allow_html=True)
                     st.write(str(p.get("why_interesting","")))
                     st.markdown(f'<div class="score">{int(p.get("opportunity_score",0))}<span class="muted"> / 100 opportunity</span></div>',unsafe_allow_html=True)
