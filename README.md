@@ -1,7 +1,11 @@
-# Product Hunter UI v9
+# Product Hunter v15
 
-Shopping-style Product Hunter. Keeps the existing product/search/favorites interface and adds separate YouTube Trends and Instagram Trends views.
+Main feed: public-web product discovery across categories and many product-source domains. It does not require a marketplace API for the base catalog.
 
-- YouTube Trends fetches recent product/gadget trend videos with the official YouTube Data API. Exact duplicate video IDs are removed; same-product videos remain separate.
-- Instagram Trends provides public, credential-free Instagram reference links derived from discovered trend/product candidates. It does not request Instagram credentials.
-- Five numbered pages are available above and below the cards, with up to 100 cards per page.
+Trend layer: Trending Stars links YouTube, Instagram, TikTok, Pinterest, Google Trends, and public-web signals. Platform APIs can be added later as optional enrichments.
+
+The collector removes exact URL duplicates only. Similar products and separate source pages remain separate cards.
+
+The app supports 5 pages x 100 cards, with Season as the primary filter.
+
+Note: public-web discovery is best-effort. Some sites block automated requests or require authentication; those sources are skipped rather than fabricated. Direct product URLs are labeled as direct, and generated marketplace searches are labeled as search.

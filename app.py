@@ -282,7 +282,93 @@ def instagram_trend_references(source_df):
     return pd.DataFrame(rows).head(500).reset_index(drop=True)
 
 
+
+# Public-web product discovery: source-agnostic, API-optional collection layer.
+PRODUCT_SOURCE_DOMAINS = {
+    "Amazon": "amazon.com", "Amazon India": "amazon.in", "Flipkart": "flipkart.com", "Meesho": "meesho.com",
+    "eBay": "ebay.com", "AliExpress": "aliexpress.com", "Alibaba": "alibaba.com", "Etsy": "etsy.com",
+    "Walmart": "walmart.com", "Target": "target.com", "Best Buy": "bestbuy.com", "Ubuy": "ubuy.com",
+    "IndiaMART": "indiamart.com", "Temu": "temu.com", "Shopee": "shopee.com", "Lazada": "lazada.com",
+}
+
+
+def _bing_search(query, count=10, offset=0):
+    """Best-effort public web discovery. No marketplace API is required."""
+    url="https://www.bing.com/search"
+    r=requests.get(url, params={"q":query, "count":min(count,50), "first":offset+1, "setlang":"en"},
+                   headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}, timeout=20)
+    r.raise_for_status()
+    html_text=r.text
+    blocks=re.findall(r'<li class="b_algo".*?</li>', html_text, flags=re.S|re.I)
+    rows=[]
+    for block in blocks:
+        m=re.search(r'<h2[^>]*>\s*<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>', block, flags=re.S|re.I)
+        if not m: continue
+        url=html.unescape(m.group(1)); title=re.sub(r'<.*?>',' ',m.group(2)); title=clean_text(title)
+        sm=re.search(r'<p[^>]*>(.*?)</p>', block, flags=re.S|re.I); snippet=clean_text(re.sub(r'<.*?>',' ',sm.group(1))) if sm else ""
+        if url.startswith("http"):
+            rows.append({"url":url,"title":title,"snippet":snippet})
+    return rows
+
+
+def _product_page_metadata(url):
+    """Read only public page metadata; failures are ignored so one site cannot stop discovery."""
+    try:
+        r=requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=12, allow_redirects=True)
+        if r.status_code >= 400: return {}
+        txt=r.text[:1000000]
+        def meta(prop):
+            m=re.search(r'<meta[^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\'][^>]+content=["\']([^"\']+)',txt,re.I)
+            if not m:
+                m=re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\']',txt,re.I)
+            return html.unescape(m.group(1)).strip() if m else ""
+        return {"title":meta("og:title") or meta("twitter:title"),"image":meta("og:image") or meta("twitter:image"),"description":meta("og:description")}
+    except Exception:
+        return {}
+
+
+def _source_name(url):
+    host=urlparse(url).netloc.lower().replace("www.","")
+    for name,domain in PRODUCT_SOURCE_DOMAINS.items():
+        if host.endswith(domain): return name
+    return host.split(".")[0].title() if host else "Public Web"
+
+
+def global_product_discover(max_cards=500, queries_per_run=20):
+    """Discover product pages from public web search across many categories and sources.
+    Exact URL duplicates are removed; products with similar names are intentionally retained.
+    """
+    queries=[]
+    for category, qs in QUERY_PACK.items():
+        for q in qs[:2]: queries.append((category,q))
+    queries=queries[:queries_per_run]
+    rows=[]; seen_urls=set()
+    for category,q in queries:
+        try: results=_bing_search(f"{q} buy product",count=10)
+        except Exception: continue
+        for result in results:
+            url=result["url"]
+            host=urlparse(url).netloc.lower()
+            if any(x in host for x in ["bing.com","microsoft.com","youtube.com","instagram.com","tiktok.com","pinterest.com"]): continue
+            if url in seen_urls: continue
+            seen_urls.add(url)
+            meta=_product_page_metadata(url)
+            name=clean_text(meta.get("title") or result.get("title") or "Product")
+            if len(name)<4: continue
+            desc=clean_text(meta.get("description") or result.get("snippet") or "")
+            text=f"{name} {desc} {category}"
+            cat=classify(text)
+            season=seasonal_tag(text)
+            source=_source_name(url)
+            # Direct source link plus clearly-labelled marketplace search links. We never claim generated searches are direct listings.
+            links=[[f"{source} (direct)",url]]
+            links += [[f"{n} (search)",u] for n,u in marketplace_links(name)]
+            rows.append({"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":0,"trend_score":0,"uniqueness_score":0,"usefulness_score":0,"demo_score":0,"saturation_score":0,"why_interesting":f"Found from {source} through public web product discovery.","image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":links,"channel":source,"source":source,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":season})
+            if len(rows)>=max_cards: return pd.DataFrame(rows)
+    return pd.DataFrame(rows)
+
 st.session_state.setdefault("live_df", pd.DataFrame())
+st.session_state.setdefault("global_products_df", pd.DataFrame())
 st.session_state.setdefault("search_df", pd.DataFrame())
 st.session_state.setdefault("search_term", "")
 st.session_state.setdefault("favorites", [])
@@ -305,17 +391,19 @@ with st.sidebar:
     lookback=st.slider("Lookback days",1,90,30)
     per_query=st.slider("Videos per search",5,50,20)
     max_queries=st.slider("Search queries",5,30,20)
-    if st.button("🚀 Run discovery",use_container_width=True):
-        if not api_key: st.session_state.last_error="Add your YouTube Data API v3 key first."
-        else:
-            with st.spinner("Collecting individual video references…"):
-                try:
-                    st.session_state.live_df=youtube_discover(api_key,region,lookback,per_query,max_queries); st.session_state.last_error=""
-                except Exception as e: st.session_state.last_error=f"Discovery failed: {type(e).__name__}: {e}"
+    if st.button("🌍 Discover Global Products",use_container_width=True):
+        with st.spinner("Discovering product pages across the public web…"):
+            try:
+                st.session_state.global_products_df=global_product_discover(MAX_CARDS, max_queries)
+                st.session_state.live_df=st.session_state.global_products_df.copy()
+                st.session_state.view="all"; st.session_state.page=1; st.session_state.last_error=""
+            except Exception as e:
+                st.session_state.last_error=f"Global discovery failed: {type(e).__name__}: {e}"
+    st.caption("Main feed uses public-web product discovery. YouTube API is optional enrichment, not a requirement for the main catalog.")
 
 st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Global product discovery across categories and public product sources. Trend signals are connected separately through Trending Stars. Product duplicates are not merged.</p></div>',unsafe_allow_html=True)
 
-raw=st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO)
+raw=st.session_state.global_products_df.copy() if not st.session_state.global_products_df.empty else (st.session_state.live_df.copy() if not st.session_state.live_df.empty else pd.DataFrame(DEMO))
 
 # Search and trend controls stay together in one row for quick product discovery.
 search_col, search_btn_col, stars_col, fav_col = st.columns([4.9,1.0,1.8,1.25])
@@ -341,9 +429,14 @@ if do_search:
     if not search_term.strip():
         st.warning("Enter a product or problem to search.")
     elif not api_key:
-        st.session_state.search_df=raw.copy()
-        st.session_state.search_term=search_term.strip()
-        st.session_state.last_error="Demo mode: add a YouTube API key in Settings for live video search."
+        with st.spinner(f"Searching public product pages for: {search_term.strip()} …"):
+            try:
+                st.session_state.search_df=global_product_discover(MAX_CARDS, 6)
+                if not st.session_state.search_df.empty:
+                    st.session_state.search_df=st.session_state.search_df[st.session_state.search_df["name"].str.contains(search_term.strip(),case=False,na=False) | st.session_state.search_df["why_interesting"].str.contains(search_term.strip(),case=False,na=False)]
+                st.session_state.search_term=search_term.strip(); st.session_state.page=1; st.session_state.last_error=""
+            except Exception as e:
+                st.session_state.last_error=f"Public-web search failed: {type(e).__name__}: {e}"
     else:
         with st.spinner(f"Searching all matching videos for: {search_term.strip()} …"):
             try:
@@ -358,6 +451,12 @@ if show_fav:
 if st.session_state.last_error: st.warning(st.session_state.last_error)
 
 if st.session_state.view=="trending_stars":
+    st.subheader("⭐ Trending Stars")
+    st.caption("One hub for the available trend sources. These links open the source directly; API access is optional and source availability varies by platform.")
+    trend_cols=st.columns(6)
+    trend_links=[("YouTube","https://www.youtube.com/results?search_query=trending+products"),("Instagram","https://www.instagram.com/explore/tags/viralproducts/"),("TikTok","https://www.tiktok.com/tag/viralproducts"),("Pinterest","https://www.pinterest.com/search/pins/?q=trending%20products"),("Google Trends","https://trends.google.com/trending?geo=US"),("Public Web","https://www.google.com/search?q=trending+products")]
+    for c,(label,url) in zip(trend_cols,trend_links):
+        with c: st.link_button(label,url,use_container_width=True)
     data=st.session_state.get("trending_stars_df",pd.DataFrame()).copy() if not st.session_state.get("trending_stars_df",pd.DataFrame()).empty else pd.DataFrame()
 elif show_fav:
     data=pd.DataFrame(st.session_state.favorites) if st.session_state.favorites else pd.DataFrame()
