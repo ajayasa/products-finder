@@ -309,13 +309,43 @@ def _parse_search_html(html_text):
     return rows
 
 
+def _jina_search(query, count=10):
+    """Fallback public-web search through Jina Reader when direct search engines block cloud IPs."""
+    target = "https://www.google.com/search?q=" + quote_plus(query)
+    url = "https://r.jina.ai/" + target
+    r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=20)
+    r.raise_for_status()
+    text = r.text
+    rows=[]
+    # Jina returns markdown links such as [title](https://example.com/product).
+    for title, link in re.findall(r"\[([^\]]{2,200})\]\((https?://[^)]+)\)", text):
+        link=html.unescape(link).strip()
+        title=clean_text(title)
+        if link.startswith("http") and title:
+            rows.append({"url":link,"title":title,"snippet":""})
+    # Also capture plain URLs if markdown links were not emitted.
+    if not rows:
+        for link in re.findall(r"https?://[^\s<>\)]+", text):
+            link=link.rstrip(".,;]")
+            if link.startswith("http"):
+                rows.append({"url":link,"title":"","snippet":""})
+    out=[]; seen=set()
+    for row in rows:
+        u=row["url"]
+        if u in seen: continue
+        seen.add(u); out.append(row)
+        if len(out)>=count: break
+    return out
+
+
 def _bing_search(query, count=10, offset=0):
-    """Best-effort public web discovery using HTML search pages; no marketplace API required."""
+    """Best-effort public web discovery with multiple public fallbacks."""
     headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}
     errors=[]
     engines=[
         ("https://www.bing.com/search", {"q":query,"count":min(count,50),"first":offset+1,"setlang":"en"}),
         ("https://html.duckduckgo.com/html/", {"q":query,"s":offset}),
+        ("https://www.google.com/search", {"q":query,"num":min(count,20),"hl":"en"}),
     ]
     for url,params in engines:
         try:
@@ -325,14 +355,19 @@ def _bing_search(query, count=10, offset=0):
             if rows: return rows[:count]
         except Exception as e:
             errors.append(type(e).__name__)
+    try:
+        rows=_jina_search(query,count)
+        if rows: return rows[:count]
+    except Exception as e:
+        errors.append("Jina:"+type(e).__name__)
     raise RuntimeError("; ".join(errors) if errors else "No public search results")
 
 
 def _product_page_metadata(url):
-    """Extract public OpenGraph/JSON-LD product data. No login/API is required."""
+    """Extract public OpenGraph/JSON-LD product data, with a cloud-friendly reader fallback."""
     try:
         r=requests.get(url,headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"},timeout=12,allow_redirects=True)
-        if r.status_code >= 400: return {}
+        if r.status_code >= 400: raise RuntimeError("HTTP %s" % r.status_code)
         txt=r.text[:1500000]
         def meta(prop):
             patterns=[r'<meta[^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\'][^>]+content=["\']([^"\']+)',r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']'+re.escape(prop)+r'["\']']
@@ -371,7 +406,19 @@ def _product_page_metadata(url):
                 break
         return {"title":clean_text(title),"image":image,"description":clean_text(desc),"price":price,"currency":currency,"availability":availability,"brand":clean_text(brand)}
     except Exception:
-        return {}
+        # Some marketplaces block cloud-hosted requests. Jina Reader can fetch the public page
+        # and gives us enough metadata to keep the product card usable.
+        try:
+            rr=requests.get("https://r.jina.ai/" + url,headers={"User-Agent":"Mozilla/5.0"},timeout=20)
+            rr.raise_for_status()
+            md=rr.text[:500000]
+            h1=re.search(r"^#\s+(.+)$",md,re.M)
+            imgs=re.findall(r"!\[[^\]]*\]\((https?://[^)]+)\)",md)
+            title=clean_text(h1.group(1)) if h1 else ""
+            desc=clean_text(re.sub(r"[#*_`]+"," ",md[:1500]))
+            return {"title":title,"image":imgs[0] if imgs else "","description":desc,"price":"","currency":"","availability":"","brand":""}
+        except Exception:
+            return {}
 
 
 def _source_name(url):
