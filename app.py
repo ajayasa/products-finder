@@ -520,11 +520,113 @@ def _fallback_catalog_products(max_cards=500, season="All Seasons"):
         if len(rows)>=max_cards: break
     return pd.DataFrame(rows[:max_cards])
 
+
+def _fast_live_catalog_products(max_cards=500, season="All Seasons"):
+    """Fast first-pass catalog loader. Uses public marketplace search pages/feeds directly and
+    does not wait for dozens of search-engine requests. It returns real listing URLs only."""
+    import xml.etree.ElementTree as ET
+    jobs=[]
+    base_queries=[]
+    for cat, qs in QUERY_PACK.items():
+        if qs:
+            q=qs[0]
+            if season and season != "All Seasons":
+                q += " " + " ".join(SEASONAL_TERMS.get(season, []))
+            base_queries.append((cat,q))
+    # Keep startup fast while still covering many categories.
+    base_queries=base_queries[:12]
+    for cat,q in base_queries:
+        jobs += [(cat,"ebay",q),(cat,"etsy",q),(cat,"walmart",q),(cat,"flipkart",q)]
+
+    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36","Accept-Language":"en-US,en;q=0.9"}
+
+    def fetch(job):
+        cat,source,q=job
+        out=[]
+        try:
+            if source=="ebay":
+                url="https://rss.api.ebay.com/ws/rssapi?FeedName=SearchResults&siteId=0&language=en-US&output=RSS20&satitle="+quote_plus(q)
+                r=requests.get(url,headers=headers,timeout=7)
+                if r.ok and "<item" in r.text.lower():
+                    root=ET.fromstring(r.content)
+                    for item in root.findall('.//item')[:15]:
+                        title=clean_text(item.findtext('title',''))
+                        link=clean_text(item.findtext('link',''))
+                        desc=clean_text(item.findtext('description',''))
+                        if title and link.startswith('http'): out.append((title,link,desc,"eBay",""))
+            else:
+                if source=="etsy":
+                    url="https://www.etsy.com/search?q="+quote_plus(q)
+                elif source=="walmart":
+                    url="https://www.walmart.com/search?q="+quote_plus(q)
+                else:
+                    url="https://www.flipkart.com/search?q="+quote_plus(q)
+                r=requests.get(url,headers=headers,timeout=7,allow_redirects=True)
+                if not r.ok: return out
+                txt=r.text[:4000000]
+                # JSON-LD Product entries are often available even when the visible page is JS-rendered.
+                for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',txt,re.I|re.S):
+                    try:
+                        data=json.loads(html.unescape(block.strip()))
+                    except Exception:
+                        continue
+                    objs=[]
+                    if isinstance(data,list): objs=data
+                    elif isinstance(data,dict): objs=data.get('@graph',[data]) if '@graph' in data else [data]
+                    for obj in objs:
+                        if not isinstance(obj,dict): continue
+                        typ=obj.get('@type',[])
+                        types=typ if isinstance(typ,list) else [typ]
+                        if 'Product' not in types: continue
+                        title=clean_text(obj.get('name','')); link=clean_text(obj.get('url','')); image=obj.get('image','')
+                        if isinstance(image,list): image=image[0] if image else ''
+                        if title and link.startswith('http'): out.append((title,link,clean_text(obj.get('description','')),source.title(),image))
+                # Generic anchors as a second fast path.
+                if len(out)<8:
+                    pairs=re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',txt,re.I|re.S)
+                    for href,label in pairs:
+                        label=clean_text(re.sub(r'<[^>]+>',' ',label))
+                        if href.startswith('/'): href='https://'+urlparse(url).netloc+href
+                        if not href.startswith('http') or len(label)<12: continue
+                        host=urlparse(href).netloc.lower()
+                        if source=='etsy' and 'etsy.com' not in host: continue
+                        if source=='walmart' and 'walmart.com' not in host: continue
+                        if source=='flipkart' and 'flipkart.com' not in host: continue
+                        if any(x in href.lower() for x in ['/search','/category','/q/','/pl/','/brand/']): continue
+                        out.append((label,href,'',source.title(),''))
+                        if len(out)>=15: break
+        except Exception:
+            return []
+        return out
+
+    rows=[]; seen=set()
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures=[pool.submit(fetch,j) for j in jobs]
+        for fut in as_completed(futures):
+            for title,url,desc,source,image in fut.result():
+                if url in seen: continue
+                seen.add(url)
+                text=(title+' '+desc).lower()
+                detected=seasonal_tag(text)
+                if season and season!="All Seasons" and season not in [x.strip() for x in detected.split(',') if x.strip()]: continue
+                cat=classify(title+' '+desc)
+                usefulness=min(100,78+(8 if any(k in text for k in ['useful','portable','tool','organizer','accessory']) else 0))
+                demo=min(100,78+(8 if any(k in text for k in ['easy','automatic','rechargeable','foldable','portable']) else 0))
+                rows.append({"name":title[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":round(min(100,usefulness*.35+demo*.25+78*.25+10)),"trend_score":0,"uniqueness_score":78,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Live public listing discovered from {source}.","image_url":image or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(title)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',title.lower())[:60]}/","product_links":[[f"{source} (direct)",url]]+marketplace_links(title),"channel":source,"source":source,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":detected,"price":"","currency":"","availability":""})
+                if len(rows)>=max_cards: break
+            if len(rows)>=max_cards: break
+    return pd.DataFrame(rows[:max_cards])
+
 def global_product_discover(max_cards=500, queries_per_run=40, season="All Seasons"):
     """Discover real public product pages across many worldwide sources.
     Product duplicates are NOT merged. Only the exact same URL is removed.
     Uses a small parallel public-web search pass so the main page can populate automatically.
     """
+    # Fast direct catalog pass first. This avoids an empty/slow startup when search engines block cloud IPs.
+    fast_catalog=_fast_live_catalog_products(max_cards=max_cards, season=season)
+    if not fast_catalog.empty:
+        return fast_catalog, ["direct-catalog-pass"]
+
     # One broad query per category gives the feed coverage without requiring a marketplace API.
     category_queries=[]
     for category, qs in QUERY_PACK.items():
@@ -638,6 +740,14 @@ def public_product_search(query, max_cards=500, season="All Seasons"):
     """Search the public web directly for a user-entered product/problem, independent of YouTube APIs."""
     query=clean_text(query)
     if not query: return pd.DataFrame()
+    # Reuse the same direct public marketplace pass for fast user searches.
+    fast=_fast_live_catalog_products(max_cards=max_cards, season=season)
+    if not fast.empty:
+        qwords=[w for w in re.findall(r"[a-z0-9]+",query.lower()) if len(w)>2]
+        if qwords:
+            mask=fast["name"].str.lower().apply(lambda x: sum(w in x for w in qwords)>=max(1,min(2,len(qwords))))
+            matched=fast[mask]
+            if not matched.empty: return matched.reset_index(drop=True)
     queries=[query]
     if season and season != "All Seasons": queries.append(query+" "+" ".join(SEASONAL_TERMS.get(season, [])))
     jobs=[]
