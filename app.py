@@ -482,423 +482,370 @@ def _source_name(url):
 
 
 
-CATALOG_FALLBACK_URLS = [
-    ("Unique & Clever", "https://www.flipkart.com/q/unique-gadgets"),
-    ("Tech & Gadgets", "https://www.flipkart.com/q/electronic-gadgets"),
-    ("Tech & Gadgets", "https://www.flipkart.com/q/gadgets-for-men"),
-    ("Home & Kitchen", "https://www.flipkart.com/home-improvement/pr?sid=h1m"),
-    ("Car & Bike", "https://www.flipkart.com/car-accessories-at-store"),
-    ("Tech & Gadgets", "https://www.meesho.com/electronic-accessories/pl/6717"),
-    ("Tools & DIY", "https://www.meesho.com/tools-accessories/pl/6715"),
+
+# Live catalog layer: prefer feeds/pages that expose actual listing data directly.
+# This avoids relying on a single search engine and ensures image URLs are captured with the listing.
+EBAY_SITES = [
+    (0, "en-US", "eBay US"),
+    (3, "en-GB", "eBay UK"),
+    (15, "en-AU", "eBay AU"),
+    (77, "de-DE", "eBay DE"),
 ]
 
-def _catalog_links(url, count=80):
-    """Read a public marketplace category/search page and extract real product links.
-    Direct HTTP is tried first; Jina Reader is used when a cloud IP is blocked.
-    """
-    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}
-    texts=[]
-    try:
-        r=requests.get(url,headers=headers,timeout=18,allow_redirects=True)
-        if r.ok and r.text:
-            texts.append(("html",r.text[:3000000]))
-    except Exception:
-        pass
-    try:
-        r=requests.get("https://r.jina.ai/"+url,headers=headers,timeout=25)
-        if r.ok and r.text:
-            texts.append(("markdown",r.text[:1000000]))
-    except Exception:
-        pass
-    rows=[]; seen=set()
-    for kind,text in texts:
-        if kind=="html":
-            # Product/category pages expose anchors even when their product cards are JS-rendered.
-            pairs=re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',text,re.I|re.S)
-            for href,label in pairs:
-                label=clean_text(re.sub(r'<[^>]+>',' ',label))
-                if href.startswith("/"):
-                    href="https://"+urlparse(url).netloc+href
-                if not href.startswith("http") or not label: continue
-                host=urlparse(href).netloc.lower()
-                if not any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()): continue
-                if href.rstrip('/')==url.rstrip('/'): continue
-                if any(x in href.lower() for x in ["/search?","/q/","/pl/","/category","/brand/"]): continue
-                if len(label)<8 or not _is_real_product_candidate(href,label): continue
-                key=href.split("#")[0]
-                if key in seen: continue
-                seen.add(key); rows.append({"url":key,"title":label,"snippet":""})
-        else:
-            # Jina Reader generally returns product cards as Markdown links.
-            for label,href in re.findall(r'\[([^\]]{8,220})\]\((https?://[^)]+)\)',text):
-                label=clean_text(label); href=html.unescape(href).strip()
-                host=urlparse(href).netloc.lower()
-                if not label or not href.startswith("http") or not _is_real_product_candidate(href,label): continue
-                if not any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()): continue
-                if any(x in href.lower() for x in ["/search?","/q/","/pl/","/category","/brand/"]): continue
-                key=href.split("#")[0]
-                if key in seen: continue
-                seen.add(key); rows.append({"url":key,"title":label,"snippet":""})
-        if len(rows)>=count: break
-    return rows[:count]
-
-def _fallback_catalog_products(max_cards=500, season="All Seasons"):
-    candidates=[]
-    for category,url in CATALOG_FALLBACK_URLS:
-        for result in _catalog_links(url, count=50):
-            candidates.append((category,result))
-            if len(candidates)>=max_cards*2: break
-        if len(candidates)>=max_cards*2: break
-    seen=set(); rows=[]
-    for category,result in candidates:
-        url=result.get("url","")
-        if url in seen: continue
-        seen.add(url)
-        meta=_product_page_metadata(url) if len(rows) < 60 else {}
-        name=clean_text(meta.get("title") or result.get("title") or "")
-        if len(name)<5: continue
-        desc=clean_text(meta.get("description") or result.get("snippet") or "")
-        text=(name+" "+desc+" "+category).lower()
-        detected=seasonal_tag(text)
-        if season and season!="All Seasons" and not any(x.strip()==season for x in detected.split(",")):
-            continue
-        source=_source_name(url)
-        usefulness=min(100,78+(8 if any(k in text for k in ["useful","portable","organizer","tool","accessory"]) else 0))
-        demo=min(100,78+(8 if any(k in text for k in ["easy","portable","automatic","rechargeable","foldable"]) else 0))
-        links=[[f"{source} (direct)",url]]+marketplace_links(name)
-        clean=[]; linkseen=set()
-        for pair in links:
-            if pair[1] not in linkseen: linkseen.add(pair[1]); clean.append(pair)
-        rows.append({"name":name[:120],"category":classify(name+" "+desc+" "+category),"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":round(min(100,usefulness*.35+demo*.25+78*.25+10)),"trend_score":0,"uniqueness_score":78,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Real public product listing discovered from {source}.","image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":clean,"channel":source,"source":source,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":detected,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")})
-        if len(rows)>=max_cards: break
-    return pd.DataFrame(rows[:max_cards])
+DIRECT_CATALOG_TEMPLATES = [
+    ("Flipkart", "https://www.flipkart.com/search?q={q}"),
+    ("Meesho", "https://www.meesho.com/search?q={q}"),
+    ("Etsy", "https://www.etsy.com/search?q={q}"),
+    ("Walmart", "https://www.walmart.com/search?q={q}"),
+    ("Target", "https://www.target.com/s?searchTerm={q}"),
+]
 
 
-def _fast_live_catalog_products(max_cards=500, season="All Seasons"):
-    """Fast multi-source catalog loader. Collects real listing URLs and images directly from public pages.
-    Similar products are retained; only exact URL duplicates are removed."""
+def _absolute_url(base, value):
+    value=html.unescape(str(value or "")).strip()
+    if not value: return ""
+    if value.startswith("//"): return "https:"+value
+    if value.startswith("/"): return "https://"+urlparse(base).netloc+value
+    return value if value.startswith("http") else ""
+
+
+def _first_image(value):
+    value=html.unescape(str(value or "")).strip()
+    if not value: return ""
+    if "," in value:
+        value=value.split(",")[0]
+    if " " in value:
+        value=value.split()[0]
+    return value if value.startswith("http") else ""
+
+
+def _parse_ebay_rss(text, source_label):
     import xml.etree.ElementTree as ET
-    jobs=[]
-    base_queries=[]
-    for cat, qs in QUERY_PACK.items():
-        if qs:
-            q=qs[0]
-            if season and season != "All Seasons":
-                q += " " + " ".join(SEASONAL_TERMS.get(season, []))
-            base_queries.append((cat,q))
-    # Cover all categories, but keep each request small and parallel.
-    for cat,q in base_queries:
-        for source in ("ebay","etsy","walmart","flipkart","meesho","target"):
-            jobs.append((cat,source,q))
+    rows=[]
+    try:
+        root=ET.fromstring(text)
+    except Exception:
+        return rows
+    for item in root.findall('.//item'):
+        title=clean_text(item.findtext('title',''))
+        link=clean_text(item.findtext('link',''))
+        desc=clean_text(item.findtext('description',''))
+        image=""
+        for child in item.iter():
+            tag=child.tag.rsplit('}',1)[-1].lower() if isinstance(child.tag,str) else ""
+            if tag in {"content","thumbnail","enclosure"}:
+                image=image or child.attrib.get("url","") or child.attrib.get("href","")
+            if tag == "image":
+                image=image or clean_text(child.text or "")
+        image=_first_image(image)
+        if title and link.startswith("http") and _is_real_product_candidate(link,title):
+            rows.append({"title":title,"url":link.split("#")[0],"description":desc,"source":source_label,"image":image})
+    return rows
 
-    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36","Accept-Language":"en-US,en;q=0.9"}
 
-    def image_from_html(fragment, base_url):
-        if not fragment: return ""
-        pats=[r'<img[^>]+(?:src|data-src|data-lazy-src)=["\']([^"\']+)',
-              r'<img[^>]+srcset=["\']([^"\']+)',
-              r'<source[^>]+srcset=["\']([^"\']+)']
-        for pat in pats:
-            m=re.search(pat,fragment,re.I|re.S)
-            if m:
-                value=html.unescape(m.group(1)).strip()
-                if ' ' in value and ',' in value:
-                    value=value.split(',')[0].strip().split(' ')[0]
-                if value.startswith('//'): value='https:'+value
-                if value.startswith('/'):
-                    value=("https://"+urlparse(base_url).netloc+value)
-                if value.startswith('http'): return value
-        return ""
+def _fetch_ebay_rss(category, query, site_id, language, source_label, limit=35, start=0):
+    params={
+        "FeedName":"SearchResults", "siteId":site_id, "language":language,
+        "output":"RSS20", "fsop":"1", "fsoo":"1", "frpp":"50",
+        "satitle":query
+    }
+    if start:
+        params["from"]="R"+str(int(start))
+    try:
+        r=requests.get("https://rss.api.ebay.com/ws/rssapi",params=params,
+                       headers={"User-Agent":"Mozilla/5.0","Accept":"application/rss+xml,application/xml,text/xml"},
+                       timeout=7,allow_redirects=True)
+        if not r.ok: return []
+        return _parse_ebay_rss(r.text, source_label)[:limit]
+    except Exception:
+        return []
 
-    def fetch(job):
-        cat,source,q=job; out=[]
-        try:
-            if source=="ebay":
-                url="https://rss.api.ebay.com/ws/rssapi?FeedName=SearchResults&siteId=0&language=en-US&output=RSS20&satitle="+quote_plus(q)
-                r=requests.get(url,headers=headers,timeout=5)
-                if r.ok and "<item" in r.text.lower():
-                    root=ET.fromstring(r.content)
-                    for item in root.findall('.//item')[:30]:
-                        title=clean_text(item.findtext('title','')); link=clean_text(item.findtext('link','')); desc=clean_text(item.findtext('description',''))
-                        image=""
-                        for child in list(item):
-                            tag=child.tag.lower()
-                            if tag.endswith('content') or tag.endswith('thumbnail') or tag.endswith('enclosure'):
-                                image=child.attrib.get('url','') or child.attrib.get('href','') or image
-                        if title and link.startswith('http') and _is_real_product_candidate(link,title): out.append((title,link,desc,"eBay",image))
-                return out
 
-            page_urls={
-                "etsy":"https://www.etsy.com/search?q="+quote_plus(q),
-                "walmart":"https://www.walmart.com/search?q="+quote_plus(q),
-                "flipkart":"https://www.flipkart.com/search?q="+quote_plus(q),
-                "meesho":"https://www.meesho.com/search?q="+quote_plus(q),
-                "target":"https://www.target.com/s?searchTerm="+quote_plus(q),
-            }
-            url=page_urls[source]
-            r=requests.get(url,headers=headers,timeout=5,allow_redirects=True)
-            if not r.ok: return out
-            txt=r.text[:5000000]
-            # JSON-LD Product objects, including nested @graph entries.
-            for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',txt,re.I|re.S):
-                try: data=json.loads(html.unescape(block.strip()))
-                except Exception: continue
-                objs=[]
-                if isinstance(data,list): objs=data
-                elif isinstance(data,dict): objs=data.get('@graph',[data]) if '@graph' in data else [data]
-                for obj in objs:
-                    if not isinstance(obj,dict): continue
-                    typ=obj.get('@type',[]); types=typ if isinstance(typ,list) else [typ]
-                    if 'Product' not in types: continue
-                    title=clean_text(obj.get('name','')); link=clean_text(obj.get('url','')); image=obj.get('image','')
-                    if isinstance(image,list): image=image[0] if image else ''
-                    if title and link.startswith('http') and _is_real_product_candidate(link,title):
-                        out.append((title,link,clean_text(obj.get('description','')),source.title(),image or ''))
-
-            # Anchor + image extraction. This works when the marketplace does not emit JSON-LD.
-            for m in re.finditer(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',txt,re.I|re.S):
-                href,label_html=m.group(1),m.group(2)
-                label=clean_text(re.sub(r'<[^>]+>',' ',label_html))
-                alt_parts=re.findall(r'<img[^>]+alt=["\']([^"\']+)',label_html,re.I|re.S)
-                alt=clean_text(' '.join(alt_parts))
-                title=label if len(label)>=12 else alt
-                if href.startswith('/'): href='https://'+urlparse(url).netloc+href
-                if not href.startswith('http') or len(title)<8: continue
-                if not any(urlparse(href).netloc.lower().endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()): continue
-                if not _is_real_product_candidate(href,title): continue
-                image=image_from_html(label_html, url)
-                out.append((title[:180],href,'',source.title(),image))
-                if len(out)>=35: break
-        except Exception:
-            return []
-        return out
-
+def _extract_direct_catalog(html_text, base_url, source_label, count=40):
     rows=[]; seen=set()
+    if not html_text: return rows
+
+    # 1) Product JSON-LD is often present even when the visible page is JS-heavy.
+    for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html_text, re.I|re.S):
+        try:
+            data=json.loads(html.unescape(block.strip()))
+        except Exception:
+            continue
+        stack=[]
+        if isinstance(data,list): stack.extend(data)
+        elif isinstance(data,dict): stack.extend(data.get("@graph",[]) if "@graph" in data else [data])
+        for obj in stack:
+            if not isinstance(obj,dict): continue
+            typ=obj.get("@type","")
+            types=typ if isinstance(typ,list) else [typ]
+            if not any(str(t).lower() in {"product","productgroup"} for t in types): continue
+            title=clean_text(obj.get("name",""))
+            image=obj.get("image","")
+            if isinstance(image,list): image=image[0] if image else ""
+            image=_absolute_url(base_url,image)
+            url=obj.get("url","") or ""
+            url=_absolute_url(base_url,url)
+            if not url and title:
+                # JSON-LD Product without URL cannot be linked reliably; skip.
+                continue
+            if title and url and _is_real_product_candidate(url,title):
+                key=url.split("#")[0]
+                if key not in seen:
+                    seen.add(key); rows.append({"title":title,"url":key,"description":clean_text(obj.get("description", "")),"source":source_label,"image":image})
+                    if len(rows)>=count: return rows
+
+    # 2) HTML product cards: keep anchor text plus image/lazy-image attributes from the same card.
+    for a in re.findall(r'<a\b[^>]*>.*?</a>', html_text, re.I|re.S):
+        hm=re.search(r'<a\b[^>]*href=["\']([^"\']+)',a,re.I)
+        if not hm: continue
+        href=_absolute_url(base_url,hm.group(1))
+        if not href: continue
+        text=clean_text(re.sub(r'<script.*?</script>|<style.*?</style>|<[^>]+>',' ',a,flags=re.I|re.S))
+        alt=clean_text(" ".join(re.findall(r'<img\b[^>]*alt=["\']([^"\']+)',a,re.I|re.S)))
+        title=clean_text(text or alt)
+        if len(title)>160: title=title[:160]
+        img=""
+        for attr in ("src","data-src","data-lazy-src","data-original","data-image","srcset","data-srcset","data-lazy-srcset"):
+            m=re.search(r'<img\b[^>]*'+attr+r'=["\']([^"\']+)',a,re.I|re.S)
+            if m:
+                img=_first_image(_absolute_url(base_url,m.group(1)) or m.group(1));
+                if img: break
+        if not _is_real_product_candidate(href,title): continue
+        if not img:
+            continue
+        key=href.split("#")[0]
+        if key in seen: continue
+        seen.add(key); rows.append({"title":title,"url":key,"description":"","source":source_label,"image":img})
+        if len(rows)>=count: break
+    return rows
+
+
+def _direct_catalog_job(source_label, url, count=50):
+    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
+             "Accept-Language":"en-US,en;q=0.9"}
+    try:
+        r=requests.get(url,headers=headers,timeout=7,allow_redirects=True)
+        if not r.ok or not r.text: return []
+        return _extract_direct_catalog(r.text,url,source_label,count=count)
+    except Exception:
+        return []
+
+
+def _normalize_live_row(item, fallback_category="Unique & Clever", season="All Seasons"):
+    title=clean_text(item.get("title",""))
+    url=clean_text(item.get("url",""))
+    image=_first_image(item.get("image",""))
+    if not title or not url or not image or not _is_real_product_candidate(url,title): return None
+    text=clean_text(title+" "+item.get("description","")+" "+fallback_category)
+    detected=seasonal_tag(text)
+    assigned=season if season and season!="All Seasons" else detected
+    if season and season!="All Seasons" and not any(s.strip()==season for s in detected.split(",")):
+        # Let seasonal queries that generated the row keep the selected season.
+        if not any(w.lower() in text.lower() for w in SEASONAL_TERMS.get(season,[])): return None
+    cat=classify(text)
+    usefulness=min(100,78+(8 if any(k in text.lower() for k in ["useful","portable","tool","organizer","accessory","automatic"]) else 0))
+    demo=min(100,78+(8 if any(k in text.lower() for k in ["easy","automatic","rechargeable","foldable","portable"]) else 0))
+    uniq=78
+    opp=round(min(100,usefulness*.35+demo*.25+uniq*.25+10))
+    source=clean_text(item.get("source", "Public Web")) or "Public Web"
+    links=[[f"{source} (direct)",url]]+marketplace_links(title)
+    clean_links=[]; linkseen=set()
+    for pair in links:
+        if pair[1] and pair[1] not in linkseen:
+            linkseen.add(pair[1]); clean_links.append(pair)
+    return {
+        "name":title[:120],"category":cat or fallback_category,"segment":"Other Unique & Useful",
+        "trend_status":"Other","opportunity_score":opp,"trend_score":0,
+        "uniqueness_score":uniq,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,
+        "why_interesting":f"Live public listing discovered from {source}.","image_url":image,
+        "youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(title)}",
+        "instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',title.lower())[:60]}/",
+        "product_links":clean_links,"channel":source,"source":source,"source_url":url,
+        "views":0,"likes":0,"comments":0,"published_at":"","season":assigned,
+        "price":"","currency":"","availability":""
+    }
+
+
+def _live_catalog_products(max_cards=500, season="All Seasons"):
+    jobs=[]
+    # One focused query per category across multiple eBay regional marketplaces.
+    for idx,(cat,qs) in enumerate(QUERY_PACK.items()):
+        q=qs[0] if qs else cat.lower()
+        if season and season!="All Seasons": q += " " + " ".join(SEASONAL_TERMS.get(season,[]))
+        site=EBAY_SITES[idx % len(EBAY_SITES)]
+        # Two RSS windows give additional live listings without depending on page-number UI.
+        for start in (0,50):
+            jobs.append((cat,q,site[0],site[1],site[2],start))
+    # Add a smaller second eBay query for more product variety.
+    for idx,(cat,qs) in enumerate(list(QUERY_PACK.items())[:12]):
+        q=(qs[1] if len(qs)>1 else qs[0]) if qs else cat.lower()
+        if season and season!="All Seasons": q += " " + " ".join(SEASONAL_TERMS.get(season,[]))
+        site=EBAY_SITES[(idx+1) % len(EBAY_SITES)]
+        jobs.append((cat,q,site[0],site[1],site[2],0))
+
+    rows=[]
+    seen=set()
     with ThreadPoolExecutor(max_workers=24) as pool:
-        futures=[pool.submit(fetch,j) for j in jobs]
+        futures=[pool.submit(_fetch_ebay_rss,cat,q,sid,lang,label,35,start) for cat,q,sid,lang,label,start in jobs]
         for fut in as_completed(futures):
             try: items=fut.result()
             except Exception: items=[]
-            for title,url,desc,source,image in items:
-                key=url.split('#')[0]
-                if key in seen or not _is_real_product_candidate(key,title): continue
-                seen.add(key)
-                text=(title+' '+desc).lower()
-                detected=seasonal_tag(text)
-                # When a seasonal query was used, the query itself is evidence for the selected season.
-                assigned_season=season if season and season!="All Seasons" else detected
-                if season and season!="All Seasons" and not assigned_season: continue
-                cat=classify(title+' '+desc)
-                usefulness=min(100,78+(8 if any(k in text for k in ['useful','portable','tool','organizer','accessory']) else 0))
-                demo=min(100,78+(8 if any(k in text for k in ['easy','automatic','rechargeable','foldable','portable']) else 0))
-                rows.append({"name":title[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":round(min(100,usefulness*.35+demo*.25+78*.25+10)),"trend_score":0,"uniqueness_score":78,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Live public listing discovered from {source}.","image_url":image or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(title)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',title.lower())[:60]}/","product_links":[[f"{source} (direct)",key]]+marketplace_links(title),"channel":source,"source":source,"source_url":key,"views":0,"likes":0,"comments":0,"published_at":"","season":assigned_season,"price":"","currency":"","availability":""})
-                if len(rows)>=max_cards: break
-            if len(rows)>=max_cards: break
-
-    df=pd.DataFrame(rows[:max_cards])
-    if not df.empty:
-        # Only enrich cards without images; this keeps startup fast while filling missing thumbnails.
-        targets=[i for i in df.index if not str(df.at[i,"image_url"] or "").strip()][:120]
-        def enrich(i):
-            try: return i,_product_page_metadata(df.at[i,"source_url"])
-            except Exception: return i,{}
-        with ThreadPoolExecutor(max_workers=12) as pool:
-            for i,meta in pool.map(enrich,targets):
-                if meta.get("image"): df.at[i,"image_url"]=meta["image"]
-                if meta.get("price"): df.at[i,"price"]=meta["price"]
-                if meta.get("currency"): df.at[i,"currency"]=meta["currency"]
-    return df
-
-def global_product_discover(max_cards=500, queries_per_run=40, season="All Seasons"):
-    """Discover real public product pages across many worldwide sources.
-    Product duplicates are NOT merged. Only the exact same URL is removed.
-    Uses a small parallel public-web search pass so the main page can populate automatically.
-    """
-    # Fast direct catalog pass first. This avoids an empty/slow startup when search engines block cloud IPs.
-    fast_catalog=_fast_live_catalog_products(max_cards=max_cards, season=season)
-    # Keep collecting if the first pass produced fewer than 500 cards so pages 2–5 are populated.
-    if len(fast_catalog) >= max_cards:
-        return fast_catalog, ["direct-catalog-pass"]
-
-    # One broad query per category gives the feed coverage without requiring a marketplace API.
-    category_queries=[]
-    for category, qs in QUERY_PACK.items():
-        if qs:
-            q=qs[0]
-            if season and season != "All Seasons":
-                q += " " + " ".join(SEASONAL_TERMS.get(season, []))
-            category_queries.append((category,q))
-    category_queries=category_queries[:max(1,min(len(category_queries),int(queries_per_run)))]
-
-    # Additional source-targeted searches keep the feed from becoming Amazon-heavy.
-    source_queries=[]
-    source_targets=list(PRODUCT_SOURCE_DOMAINS.items())
-    for source_name, domain in source_targets:
-        source_queries.append((source_name, domain, "useful products gadgets tools"))
-
-    search_jobs=[]
-    for category,q in category_queries:
-        search_jobs.append((category, None, q))
-    # Add one targeted query per source, but keep the total search pass bounded.
-    search_jobs.extend(source_queries[:max(0, min(len(source_queries), 20))])
-
-    raw=[]
-    failures=[]
-    def run_job(job):
-        category, source_name, q = job
-        if source_name:
-            domain=PRODUCT_SOURCE_DOMAINS.get(source_name, "")
-            query=f"site:{domain} {q}"
-        else:
-            query=f"{q} buy product"
-        return job, _bing_search(query, count=8)
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures=[pool.submit(run_job,j) for j in search_jobs]
-        for fut in as_completed(futures):
-            job=search_jobs[0]
-            try:
-                job, results=fut.result()
-                category, source_name, _=job
-                for result in results:
-                    raw.append((category, source_name, result))
-            except Exception as e:
-                failures.append(str(e))
-
-    # Exact URL duplicate only. Similar products remain separate cards.
-    candidates=[]; seen_urls=set()
-    for category, source_hint, result in raw:
-        url=result.get("url", "")
-        if not url.startswith("http") or url in seen_urls:
-            continue
-        host=urlparse(url).netloc.lower()
-        if any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()):
-            seen_urls.add(url)
-            candidates.append((category, source_hint, result))
-        elif source_hint is None:
-            # Public brand/manufacturer/product pages are allowed in the global feed.
-            if any(x in host for x in ["youtube.com","instagram.com","tiktok.com","pinterest.com","facebook.com","google.com","bing.com"]):
-                continue
-            seen_urls.add(url)
-            candidates.append((category, source_hint, result))
-        if len(candidates)>=max_cards*2:
-            break
-
-    def enrich(item):
-        category, source_hint, result=item
-        url=result.get("url","")
-        meta=_product_page_metadata(url)
-        name=clean_text(meta.get("title") or result.get("title") or "")
-        if len(name)<5:
-            return None
-        desc=clean_text(meta.get("description") or result.get("snippet") or "")
-        text=f"{name} {desc} {category}"
-        cat=classify(text)
-        detected_season=seasonal_tag(text)
-        low=text.lower()
-        usefulness=min(100,72 + (10 if any(k in low for k in ["useful","problem","solution","save time","save money"]) else 0))
-        demo=min(100,72 + (12 if any(k in low for k in ["before after","easy","portable","tool","how to","demonstration"]) else 0))
-        uniq=78
-        opp=round(min(100,usefulness*.35+demo*.25+uniq*.25+10))
-        source=_source_name(url) if not source_hint else (_source_name(url) if urlparse(url).netloc else source_hint)
-        links=[[f"{source} (direct)",url]] + marketplace_links(name)
-        # Keep link list unique while retaining every marketplace search destination.
-        seen=set(); clean_links=[]
-        for label,link in links:
-            if link not in seen:
-                seen.add(link); clean_links.append([label,link])
-        return {"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":opp,"trend_score":0,"uniqueness_score":uniq,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Public product page found on {source}."+(f" Brand: {meta['brand']}." if meta.get("brand") else ""),"image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":clean_links,"channel":source,"source":source,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":detected_season,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")}
-
-    rows=[]
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures=[pool.submit(enrich,item) for item in candidates[:max_cards*2]]
-        for fut in as_completed(futures):
-            try:
-                row=fut.result()
+            for item in items:
+                u=item.get("url","").split("#")[0]
+                if not u or u in seen: continue
+                seen.add(u)
+                row=_normalize_live_row(item, season=season)
                 if row: rows.append(row)
                 if len(rows)>=max_cards: break
-            except Exception:
-                continue
-    # Stable order for the UI; combine independent discovery passes until all five pages have data.
-    combined=[]
-    if not fast_catalog.empty: combined.extend(fast_catalog.to_dict("records"))
-    if rows: combined.extend(rows)
-    if len(combined) < max_cards:
-        fallback=_fallback_catalog_products(max_cards=max_cards-len(combined), season=season)
-        if not fallback.empty: combined.extend(fallback.to_dict("records"))
-    if combined:
-        # Exact URL duplicate only; similar products remain separate.
-        seen_urls=set(); final=[]
-        for row in combined:
-            u=str(row.get("source_url","") or "")
-            if u and u in seen_urls: continue
-            if u: seen_urls.add(u)
-            final.append(row)
-            if len(final)>=max_cards: break
-        return pd.DataFrame(final), sorted(set(failures))
-    # Nothing usable from any live source.
-    fallback=_fallback_catalog_products(max_cards=max_cards, season=season)
-    if not fallback.empty:
-        return fallback, sorted(set(failures))+["search-engine-empty:catalog-fallback-used"]
-    return pd.DataFrame(), sorted(set(failures))
+            if len(rows)>=max_cards: break
 
+    # Direct public catalog pages from several independent marketplaces fill source diversity.
+    direct_terms=[
+        ("Flipkart","unique gadgets"),("Flipkart","electronic gadgets"),("Flipkart","useful home gadgets"),
+        ("Meesho","electronic accessories"),("Meesho","tools accessories"),
+        ("Etsy","unique useful gadgets"),("Walmart","useful gadgets"),("Target","useful gadgets"),
+    ]
+    direct_jobs=[]
+    for source,q in direct_terms:
+        for name,template in DIRECT_CATALOG_TEMPLATES:
+            if name==source:
+                direct_jobs.append((source,template.format(q=quote_plus(q))))
+                break
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures=[pool.submit(_direct_catalog_job,source,url,45) for source,url in direct_jobs]
+        for fut in as_completed(futures):
+            try: items=fut.result()
+            except Exception: items=[]
+            for item in items:
+                u=item.get("url","").split("#")[0]
+                if not u or u in seen: continue
+                seen.add(u)
+                row=_normalize_live_row(item, season=season)
+                if row: rows.append(row)
+                if len(rows)>=max_cards: break
+            if len(rows)>=max_cards: break
+
+    # Small public-search pass only if the direct/feed sources are still short.
+    if len(rows)<max_cards:
+        search_jobs=[]
+        for cat,qs in list(QUERY_PACK.items())[:10]:
+            q=qs[0] if qs else cat.lower()
+            if season and season!="All Seasons": q += " " + " ".join(SEASONAL_TERMS.get(season,[]))
+            search_jobs.append((cat,q+" buy product"))
+        raw=[]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            fmap={pool.submit(_bing_search,q,6):(cat,q) for cat,q in search_jobs}
+            for fut in as_completed(fmap):
+                cat,_=fmap[fut]
+                try:
+                    for r in fut.result(): raw.append((cat,r))
+                except Exception:
+                    pass
+        candidates=[]
+        for cat,r in raw:
+            u=r.get("url","")
+            if not u.startswith("http") or u.split("#")[0] in seen: continue
+            host=urlparse(u).netloc.lower()
+            if any(x in host for x in ["youtube.com","instagram.com","tiktok.com","pinterest.com","facebook.com","google.com","bing.com","duckduckgo.com"]): continue
+            if not _is_real_product_candidate(u,r.get("title","") or r.get("snippet","")): continue
+            candidates.append((cat,r))
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            fmap={pool.submit(_product_page_metadata,r.get("url","")):(cat,r) for cat,r in candidates[:160]}
+            for fut,(cat,r) in fmap.items():
+                try: meta=fut.result()
+                except Exception: meta={}
+                item={"title":meta.get("title") or r.get("title",""),"url":r.get("url",""),"description":meta.get("description") or r.get("snippet",""),"source":_source_name(r.get("url","")),"image":meta.get("image","")}
+                row=_normalize_live_row(item,fallback_category=cat,season=season)
+                if row and item["url"].split("#")[0] not in seen:
+                    seen.add(item["url"].split("#")[0]); rows.append(row)
+                if len(rows)>=max_cards: break
+
+    # Main feed intentionally requires an image, matching the user's card expectation.
+    out=[]; seen2=set()
+    for row in rows:
+        u=str(row.get("source_url","")).split("#")[0]
+        img=str(row.get("image_url","") or "")
+        if not u or u in seen2 or not img.startswith("http"): continue
+        seen2.add(u); out.append(row)
+        if len(out)>=max_cards: break
+    return pd.DataFrame(out[:max_cards])
+
+
+def global_product_discover(max_cards=500, queries_per_run=40, season="All Seasons"):
+    """Live product discovery. Uses public listing feeds/pages and keeps only real products with images.
+    Similar products are retained; only exact URLs are removed."""
+    df=_live_catalog_products(max_cards=max_cards, season=season)
+    if df.empty:
+        return pd.DataFrame(), ["No live product source returned usable image-backed listings"]
+    return df, []
 
 def public_product_search(query, max_cards=500, season="All Seasons"):
-    """Search the public web directly for a user-entered product/problem, independent of YouTube APIs."""
+    """Fast public product search using the same live feed/page sources as the main catalog.
+    YouTube credentials never control this path."""
     query=clean_text(query)
     if not query: return pd.DataFrame()
-    # Reuse the same direct public marketplace pass for fast user searches.
-    fast=_fast_live_catalog_products(max_cards=max_cards, season=season)
-    if not fast.empty:
-        qwords=[w for w in re.findall(r"[a-z0-9]+",query.lower()) if len(w)>2]
-        if qwords:
-            mask=fast["name"].str.lower().apply(lambda x: sum(w in x for w in qwords)>=max(1,min(2,len(qwords))))
-            matched=fast[mask]
-            if not matched.empty: return matched.reset_index(drop=True)
-    queries=[query]
-    if season and season != "All Seasons": queries.append(query+" "+" ".join(SEASONAL_TERMS.get(season, [])))
     jobs=[]
-    for q in queries:
-        jobs.append((None,q+" buy product"))
-        for source,domain in list(PRODUCT_SOURCE_DOMAINS.items())[:16]:
-            jobs.append((source,f"site:{domain} {q}"))
-    raw=[]; failures=[]
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        future_map={pool.submit(_bing_search,q,count=8):(source,q) for source,q in jobs}
-        for fut,(source,q) in future_map.items():
-            try:
-                for result in fut.result(): raw.append((source,result))
-            except Exception as e: failures.append(type(e).__name__)
-    seen=set(); candidates=[]
-    for source_hint,result in raw:
-        url=result.get("url","")
-        if not url.startswith("http") or url in seen: continue
-        host=urlparse(url).netloc.lower()
-        if any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()) or source_hint is None:
-            if any(x in host for x in ["youtube.com","instagram.com","tiktok.com","pinterest.com","facebook.com","google.com","bing.com","duckduckgo.com"]): continue
-            seen.add(url); candidates.append((source_hint,result))
-        if len(candidates)>=max_cards*2: break
-    rows=[]
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        future_map={pool.submit(_product_page_metadata,item[1].get("url","")):item for item in candidates[:max_cards*2]}
-        for fut,item in future_map.items():
-            try:
-                meta=fut.result(); result=item[1]
-                name=clean_text(meta.get("title") or result.get("title") or "")
-                if len(name)<5: continue
-                desc=clean_text(meta.get("description") or result.get("snippet") or "")
-                text=f"{name} {desc} {query}"
-                cat=classify(text); detected=seasonal_tag(text)
-                low=text.lower(); usefulness=min(100,72+(10 if any(k in low for k in ["useful","problem","solution","save time","save money"]) else 0)); demo=min(100,72+(12 if any(k in low for k in ["before after","easy","portable","tool","how to","demonstration"]) else 0)); uniq=78
-                opp=round(min(100,usefulness*.35+demo*.25+uniq*.25+10))
-                source=_source_name(result.get("url",""))
-                links=[[f"{source} (direct)",result.get("url","")]]+marketplace_links(name)
-                unique_links=[]; seen_links=set()
-                for label,link in links:
-                    if link and link not in seen_links: seen_links.add(link); unique_links.append([label,link])
-                rows.append({"name":name[:120],"category":cat,"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":opp,"trend_score":0,"uniqueness_score":uniq,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Public product page found on {source}.","image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":unique_links,"channel":source,"source":source,"source_url":result.get("url",""),"views":0,"likes":0,"comments":0,"published_at":"","season":detected,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")})
-            except Exception: continue
+    q=query
+    if season and season!="All Seasons": q += " " + " ".join(SEASONAL_TERMS.get(season,[]))
+    for sid,lang,label in EBAY_SITES:
+        jobs.append(("Unique & Clever",q,sid,lang,label))
+    # Search several independent public marketplaces in parallel.
+    for source,template in DIRECT_CATALOG_TEMPLATES:
+        jobs.append((source,template.format(q=quote_plus(query))))
+
+    rows=[]; seen=set()
+    def feed_job(item):
+        if len(item)==5:
+            cat,q,sid,lang,label=item
+            return [_normalize_live_row(x,fallback_category=classify(query),season=season) for x in _fetch_ebay_rss(cat,q,sid,lang,label,50)]
+        source,url=item
+        return [_normalize_live_row(x,fallback_category=classify(query),season=season) for x in _direct_catalog_job(source,url,60)]
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        fmap={pool.submit(feed_job,j):j for j in jobs}
+        for fut in as_completed(fmap):
+            try: items=fut.result()
+            except Exception: items=[]
+            for row in items:
+                if not row: continue
+                # Keep query relevance for feed/page matches; no name-based duplicate merge.
+                hay=(str(row.get("name","")).lower()+" "+str(row.get("category","")).lower())
+                words=[w for w in re.findall(r"[a-z0-9]+",query.lower()) if len(w)>2]
+                if words and not any(w in hay for w in words):
+                    continue
+                u=str(row.get("source_url","")).split("#")[0]
+                if not u or u in seen or not str(row.get("image_url","")).startswith("http"): continue
+                seen.add(u); rows.append(row)
+                if len(rows)>=max_cards: break
             if len(rows)>=max_cards: break
+
+    # Small public-web search fallback to catch brand/manufacturer sites.
+    if len(rows)<max_cards:
+        search_terms=[query+" product", query+" gadget", query+" tool"]
+        raw=[]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            fmap={pool.submit(_bing_search,q,8):q for q in search_terms}
+            for fut in as_completed(fmap):
+                try: raw.extend(fut.result())
+                except Exception: pass
+        candidates=[]
+        for result in raw:
+            u=str(result.get("url","")).split("#")[0]
+            if not u or u in seen: continue
+            host=urlparse(u).netloc.lower()
+            if any(x in host for x in ["youtube.com","instagram.com","tiktok.com","pinterest.com","facebook.com","google.com","bing.com","duckduckgo.com"]): continue
+            if not _is_real_product_candidate(u,result.get("title","") or result.get("snippet","")): continue
+            candidates.append(result)
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            fmap={pool.submit(_product_page_metadata,r.get("url","")):r for r in candidates[:120]}
+            for fut,result in fmap.items():
+                try: meta=fut.result()
+                except Exception: meta={}
+                item={"title":meta.get("title") or result.get("title",""),"url":result.get("url",""),"description":meta.get("description") or result.get("snippet",""),"source":_source_name(result.get("url","")),"image":meta.get("image","")}
+                row=_normalize_live_row(item,fallback_category=classify(query),season=season)
+                if row and row["source_url"] not in seen:
+                    seen.add(row["source_url"]); rows.append(row)
+                if len(rows)>=max_cards: break
     return pd.DataFrame(rows[:max_cards])
 
 st.session_state.setdefault("live_df", pd.DataFrame())
@@ -922,7 +869,11 @@ st.markdown("""<style>
 
 with st.sidebar:
     st.header("⚙️ Discovery settings")
-    api_key=st.text_input("YouTube API key",type="password",value=st.secrets.get("YOUTUBE_API_KEY",os.getenv("YOUTUBE_API_KEY","")) if hasattr(st,"secrets") else os.getenv("YOUTUBE_API_KEY",""))
+    try:
+        _secret_key=st.secrets.get("YOUTUBE_API_KEY", "")
+    except Exception:
+        _secret_key=os.getenv("YOUTUBE_API_KEY", "")
+    api_key=st.text_input("YouTube API key",type="password",value=_secret_key)
     region=st.selectbox("Region",["IN","US","GB","AE","AU","CA","SG","JP"],index=0)
     lookback=st.slider("Lookback days",1,90,30)
     per_query=st.slider("Videos per search",5,50,20)

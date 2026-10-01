@@ -1,4 +1,4 @@
-# Product Hunter v23
+# Product Hunter v26
 
 Product Hunter loads real public product listings from multiple marketplaces first, then uses broader public-web discovery. Legal/navigation pages are filtered out and the first product cards are enriched with real product images when available.
 
