@@ -1,29 +1,40 @@
-# Product Hunter v16
+# Product Hunter v17
 
-Multi-source real-product discovery app for Streamlit Community Cloud.
+This version continues the working Product Hunter feed and expands the product-source layer.
 
-## Included live sources
+## Product sources
 
-- Lianex public cached product catalogue API (no key required)
-- Little Bird Electronics public read-only product API (no key required)
+The main feed uses real catalog data from multiple independent sources:
 
-## Trend / reference sources
+- Lianex cache, queried separately for its currently documented marketplaces: eBay, Amazon, AliExpress, JB Hi-Fi and SHEIN. Lianex is cache-only and does not perform live marketplace searches.
+- Little Bird Electronics public read-only JSON API.
+- Optional official eBay Browse API when `EBAY_CLIENT_ID` and `EBAY_CLIENT_SECRET` are configured.
+- Optional Etsy Open API when `ETSY_API_KEY` is configured.
+- Optional Walmart API when `WALMART_ACCESS_TOKEN` is configured.
 
-The **⭐ Trending Stars** area links to YouTube, Instagram, TikTok, Pinterest, Google Trends and public web research. The app does not download or republish social-media videos/posts.
+Similar listings are not merged. Only exact normalized duplicate URLs are removed after all sources are collected.
 
-## Important behavior
+Other marketplace links remain available as search links when an exact listing was not actually discovered. The UI labels exact product links separately from marketplace search links.
 
-- No fake/demo products in the production feed.
-- Similar products/listings are NOT merged.
-- Only exact duplicate product URLs are removed.
-- Navigation/legal/search/account pages are rejected.
-- Each source is isolated; a failed source does not erase the others.
-- Product cards include source, image when supplied, price when supplied, category, season, usefulness, uniqueness, product links, YouTube and Instagram research links.
-- Marketplace links are explicitly labeled as search links when an exact cross-market listing was not discovered.
-- Main feed supports up to 500 working records and five page controls with up to 100 cards per page.
+## Streamlit Cloud secrets
 
-## Streamlit Cloud
+Optional provider secrets can be entered in the Streamlit Cloud app settings under Secrets. The app reads:
 
-Repository root must contain `app.py` and `requirements.txt`.
+```toml
+EBAY_CLIENT_ID = "..."
+EBAY_CLIENT_SECRET = "..."
+ETSY_API_KEY = "..."
+WALMART_ACCESS_TOKEN = "..."
+```
 
-No API key is required for the two initial product sources. Credentials for future provider-specific APIs should be stored in Streamlit Secrets, not GitHub.
+No secrets are hard-coded.
+
+## Trend sources
+
+The separate `⭐ Trending Stars` area opens public research/reference pages for YouTube, Instagram, TikTok, Pinterest, Google Trends and the public web. Social media is not downloaded or republished.
+
+## Run
+
+Streamlit Cloud entry point: `app.py`.
+
+No Bash-only deployment workflow is required.

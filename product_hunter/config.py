@@ -45,6 +45,20 @@ BLOCKED_URL_TERMS = {
     '/category/', '/categories/', '/search?', '/search/', '/seller/',
 }
 
-USER_AGENT = 'ProductHunter/16.0 (Streamlit Cloud)'
+USER_AGENT = 'ProductHunter/17.0 (Streamlit Cloud)'
 TIMEOUT_SECONDS = 15
 MAX_PRODUCTS = 500
+
+LIANEX_MARKETPLACES = {
+    'ebay': 'eBay',
+    'amazon': 'Amazon',
+    'aliexpress': 'AliExpress',
+    'jbhifi': 'JB Hi-Fi',
+    'shein': 'SHEIN',
+}
+
+EBAY_TOKEN_URL = 'https://api.ebay.com/identity/v1/oauth2/token'
+EBAY_BROWSE_URL = 'https://api.ebay.com/buy/browse/v1/item_summary/search'
+ETSY_LISTINGS_URL = 'https://openapi.etsy.com/v3/application/listings/active'
+WALMART_SEARCH_URL = 'https://marketplace.walmartapis.com/v3/items/walmart/search'
+

@@ -81,11 +81,16 @@ with f4:
 
 @st.cache_data(ttl=900, show_spinner=False)
 def load_products(query: str):
-    collector = ProductCollector()
-    queries = [query] if query else DEFAULT_QUERY_PACK
-    lianex = collector.collect_lianex(queries, per_query=40)
-    little = collector.collect_little_bird(queries[:5], per_query=25, max_pages=3)
-    products = collector.exact_url_dedupe(lianex + little)
+    secret_names = ('EBAY_CLIENT_ID', 'EBAY_CLIENT_SECRET', 'ETSY_API_KEY', 'WALMART_ACCESS_TOKEN')
+    secrets = {}
+    for name in secret_names:
+        try:
+            if name in st.secrets:
+                secrets[name] = st.secrets[name]
+        except Exception:
+            pass
+    collector = ProductCollector(secrets=secrets)
+    products = collector.collect_all(query)
     return products[:MAX_PRODUCTS], [(s.name, s.ok, s.count, s.message) for s in collector.status]
 
 if not st.session_state.loaded and st.session_state.view in {'products','favorites'}:
@@ -94,6 +99,13 @@ if not st.session_state.loaded and st.session_state.view in {'products','favorit
         st.session_state.products = products
         st.session_state.source_status = statuses
         st.session_state.loaded = True
+
+# Source coverage appears before the feed so a user can see whether the feed is
+# multi-source instead of assuming that one marketplace is the whole catalogue.
+if st.session_state.source_status:
+    successful = [(name, count) for name, ok, count, _ in st.session_state.source_status if ok and count > 0]
+    if successful:
+        st.caption('Source coverage: ' + ' · '.join(f'{name}: {count}' for name, count in successful))
 
 with st.expander('Source status & diagnostics', expanded=False):
     if st.session_state.source_status:
