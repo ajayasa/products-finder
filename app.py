@@ -45,7 +45,7 @@ st.markdown('''
 </style>
 ''', unsafe_allow_html=True)
 
-st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Real product discovery from multiple structured/public catalogs. Similar listings are not merged; only exact duplicate URLs are removed.</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="hero"><h1>🔎 Product Hunter</h1><p>Real product discovery from multiple structured/public catalogs. Similar listings are not merged; only exact duplicate URLs are removed.</p><div class="small">Build v18</div></div>', unsafe_allow_html=True)
 
 # Search + requested action buttons on same row.
 c1, c2, c3, c4 = st.columns([5.8, 1.35, 1.8, 1.45], vertical_alignment='center')
@@ -89,7 +89,16 @@ def load_products(query: str):
                 secrets[name] = st.secrets[name]
         except Exception:
             pass
-    collector = ProductCollector(secrets=secrets)
+    # Keep deployment backward-compatible if Streamlit is briefly running an older
+    # ProductCollector implementation from the repository cache.
+    try:
+        collector = ProductCollector(secrets=secrets)
+    except TypeError:
+        collector = ProductCollector()
+        try:
+            collector.secrets = secrets
+        except Exception:
+            pass
     products = collector.collect_all(query)
     return products[:MAX_PRODUCTS], [(s.name, s.ok, s.count, s.message) for s in collector.status]
 
