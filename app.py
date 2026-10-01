@@ -428,6 +428,98 @@ def _source_name(url):
     return host.split(".")[0].title() if host else "Public Web"
 
 
+
+CATALOG_FALLBACK_URLS = [
+    ("Unique & Clever", "https://www.flipkart.com/q/unique-gadgets"),
+    ("Tech & Gadgets", "https://www.flipkart.com/q/electronic-gadgets"),
+    ("Tech & Gadgets", "https://www.flipkart.com/q/gadgets-for-men"),
+    ("Home & Kitchen", "https://www.flipkart.com/home-improvement/pr?sid=h1m"),
+    ("Car & Bike", "https://www.flipkart.com/car-accessories-at-store"),
+    ("Tech & Gadgets", "https://www.meesho.com/electronic-accessories/pl/6717"),
+    ("Tools & DIY", "https://www.meesho.com/tools-accessories/pl/6715"),
+]
+
+def _catalog_links(url, count=80):
+    """Read a public marketplace category/search page and extract real product links.
+    Direct HTTP is tried first; Jina Reader is used when a cloud IP is blocked.
+    """
+    headers={"User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140 Safari/537.36"}
+    texts=[]
+    try:
+        r=requests.get(url,headers=headers,timeout=18,allow_redirects=True)
+        if r.ok and r.text:
+            texts.append(("html",r.text[:3000000]))
+    except Exception:
+        pass
+    try:
+        r=requests.get("https://r.jina.ai/"+url,headers=headers,timeout=25)
+        if r.ok and r.text:
+            texts.append(("markdown",r.text[:1000000]))
+    except Exception:
+        pass
+    rows=[]; seen=set()
+    for kind,text in texts:
+        if kind=="html":
+            # Product/category pages expose anchors even when their product cards are JS-rendered.
+            pairs=re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>',text,re.I|re.S)
+            for href,label in pairs:
+                label=clean_text(re.sub(r'<[^>]+>',' ',label))
+                if href.startswith("/"):
+                    href="https://"+urlparse(url).netloc+href
+                if not href.startswith("http") or not label: continue
+                host=urlparse(href).netloc.lower()
+                if not any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()): continue
+                if href.rstrip('/')==url.rstrip('/'): continue
+                if any(x in href.lower() for x in ["/search?","/q/","/pl/","/category","/brand/"]): continue
+                if len(label)<8: continue
+                key=href.split("#")[0]
+                if key in seen: continue
+                seen.add(key); rows.append({"url":key,"title":label,"snippet":""})
+        else:
+            # Jina Reader generally returns product cards as Markdown links.
+            for label,href in re.findall(r'\[([^\]]{8,220})\]\((https?://[^)]+)\)',text):
+                label=clean_text(label); href=html.unescape(href).strip()
+                host=urlparse(href).netloc.lower()
+                if not label or not href.startswith("http"): continue
+                if not any(host.endswith(d) for d in PRODUCT_SOURCE_DOMAINS.values()): continue
+                if any(x in href.lower() for x in ["/search?","/q/","/pl/","/category","/brand/"]): continue
+                key=href.split("#")[0]
+                if key in seen: continue
+                seen.add(key); rows.append({"url":key,"title":label,"snippet":""})
+        if len(rows)>=count: break
+    return rows[:count]
+
+def _fallback_catalog_products(max_cards=500, season="All Seasons"):
+    candidates=[]
+    for category,url in CATALOG_FALLBACK_URLS:
+        for result in _catalog_links(url, count=50):
+            candidates.append((category,result))
+            if len(candidates)>=max_cards*2: break
+        if len(candidates)>=max_cards*2: break
+    seen=set(); rows=[]
+    for category,result in candidates:
+        url=result.get("url","")
+        if url in seen: continue
+        seen.add(url)
+        meta=_product_page_metadata(url) if len(rows) < 60 else {}
+        name=clean_text(meta.get("title") or result.get("title") or "")
+        if len(name)<5: continue
+        desc=clean_text(meta.get("description") or result.get("snippet") or "")
+        text=(name+" "+desc+" "+category).lower()
+        detected=seasonal_tag(text)
+        if season and season!="All Seasons" and not any(x.strip()==season for x in detected.split(",")):
+            continue
+        source=_source_name(url)
+        usefulness=min(100,78+(8 if any(k in text for k in ["useful","portable","organizer","tool","accessory"]) else 0))
+        demo=min(100,78+(8 if any(k in text for k in ["easy","portable","automatic","rechargeable","foldable"]) else 0))
+        links=[[f"{source} (direct)",url]]+marketplace_links(name)
+        clean=[]; linkseen=set()
+        for pair in links:
+            if pair[1] not in linkseen: linkseen.add(pair[1]); clean.append(pair)
+        rows.append({"name":name[:120],"category":classify(name+" "+desc+" "+category),"segment":"Other Unique & Useful","trend_status":"Other","opportunity_score":round(min(100,usefulness*.35+demo*.25+78*.25+10)),"trend_score":0,"uniqueness_score":78,"usefulness_score":usefulness,"demo_score":demo,"saturation_score":0,"why_interesting":f"Real public product listing discovered from {source}.","image_url":meta.get("image") or "","youtube_url":f"https://www.youtube.com/results?search_query={quote_plus(name)}","instagram_url":f"https://www.instagram.com/explore/tags/{re.sub(r'[^a-z0-9]+','',name.lower())[:60]}/","product_links":clean,"channel":source,"source":source,"source_url":url,"views":0,"likes":0,"comments":0,"published_at":"","season":detected,"price":meta.get("price",""),"currency":meta.get("currency",""),"availability":meta.get("availability","")})
+        if len(rows)>=max_cards: break
+    return pd.DataFrame(rows[:max_cards])
+
 def global_product_discover(max_cards=500, queries_per_run=40, season="All Seasons"):
     """Discover real public product pages across many worldwide sources.
     Product duplicates are NOT merged. Only the exact same URL is removed.
@@ -533,7 +625,13 @@ def global_product_discover(max_cards=500, queries_per_run=40, season="All Seaso
             except Exception:
                 continue
     # Stable order for the UI; no name-based product deduplication.
-    return pd.DataFrame(rows[:max_cards]), sorted(set(failures))
+    if rows:
+        return pd.DataFrame(rows[:max_cards]), sorted(set(failures))
+    # Cloud-safe fallback: read public marketplace category pages directly.
+    fallback=_fallback_catalog_products(max_cards=max_cards, season=season)
+    if not fallback.empty:
+        return fallback, sorted(set(failures))+["search-engine-empty:catalog-fallback-used"]
+    return pd.DataFrame(), sorted(set(failures))
 
 
 def public_product_search(query, max_cards=500, season="All Seasons"):
